@@ -123,6 +123,9 @@ def update_course(courseId: str, body: UpdateCourseRequest) -> dict[str, Any]:
 
 @router.delete("/{courseId}", status_code=204)
 def delete_course(courseId: str) -> None:
+    row = supabase.table("course_versions").select("id").eq("id", courseId).single().execute().data
+    if not row:
+        raise HTTPException(status_code=404, detail="Course not found")
     supabase.table("course_versions").delete().eq("id", courseId).execute()
     return None
 

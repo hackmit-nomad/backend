@@ -37,20 +37,50 @@ def list_communities(
     resp = query.execute()
     items = resp.data or []
 
+    memberships = (
+        supabase.table("community_members").select("communityId").eq("userId", user_id).execute().data
+    ) or []
+    joined_ids = {m["communityId"] for m in memberships}
+
     if joined is not None:
-        mem = (
-            supabase.table("community_members")
-            .select("communityId")
-            .eq("userId", user_id)
-            .execute()
-        ).data or []
-        joined_ids = {m["communityId"] for m in mem}
         if joined:
             items = [c for c in items if c["id"] in joined_ids]
         else:
             items = [c for c in items if c["id"] not in joined_ids]
 
-    mapped = [_community_to_api(c, user_id) for c in items]
+    community_ids = [c["id"] for c in items]
+    member_counts_rows = (
+        supabase.table("community_members").select("communityId").in_("communityId", community_ids).execute().data
+    ) if community_ids else []
+    post_counts_rows = (
+        supabase.table("posts").select("communityId").in_("communityId", community_ids).execute().data
+    ) if community_ids else []
+
+    member_counts: dict[str, int] = {}
+    for row in member_counts_rows or []:
+        cid = row["communityId"]
+        member_counts[cid] = member_counts.get(cid, 0) + 1
+    post_counts: dict[str, int] = {}
+    for row in post_counts_rows or []:
+        cid = row["communityId"]
+        post_counts[cid] = post_counts.get(cid, 0) + 1
+
+    mapped = [
+        {
+            "id": c["id"],
+            "name": c.get("name") or "",
+            "description": c.get("introduction") or c.get("description") or "",
+            "icon": c.get("icon") or "",
+            "banner": c.get("banner"),
+            "color": c.get("color") or "",
+            "members": int(member_counts.get(c["id"], 0)),
+            "posts": int(post_counts.get(c["id"], 0)),
+            "tags": c.get("tags") or [],
+            "isJoined": c["id"] in joined_ids,
+            "university": c.get("university"),
+        }
+        for c in items
+    ]
     return {"items": mapped, "total": len(mapped)}
 
 
@@ -101,6 +131,9 @@ def update_community(communityId: str, body: UpdateCommunityRequest, user_id: st
 
 @router.delete("/{communityId}", status_code=204)
 def delete_community(communityId: str) -> None:
+    row = supabase.table("communities").select("id").eq("id", communityId).single().execute().data
+    if not row:
+        raise HTTPException(status_code=404, detail="Community not found")
     supabase.table("communities").delete().eq("id", communityId).execute()
     return None
 

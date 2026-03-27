@@ -145,6 +145,9 @@ def update_conversation(
 @router.delete("/conversations/{conversationId}", status_code=204)
 def delete_conversation(conversationId: str, user_id: str = Depends(get_current_user_id)) -> None:
     _assert_is_participant(conversationId, user_id)
+    exists = supabase.table("chats").select("id").eq("id", conversationId).single().execute().data
+    if not exists:
+        raise HTTPException(status_code=404, detail="Conversation not found")
     supabase.table("messages").delete().eq("chatId", conversationId).execute()
     supabase.table("chat_participants").delete().eq("chatId", conversationId).execute()
     supabase.table("chats").delete().eq("id", conversationId).execute()
@@ -188,7 +191,20 @@ def send_message(conversationId: str, body: CreateMessageRequest, user_id: str =
 @router.delete("/conversations/{conversationId}/messages/{messageId}", status_code=204)
 def delete_message(conversationId: str, messageId: str, user_id: str = Depends(get_current_user_id)) -> None:
     _assert_is_participant(conversationId, user_id)
-    supabase.table("messages").delete().eq("id", messageId).eq("chatId", conversationId).execute()
+    row = (
+        supabase.table("messages")
+        .select("*")
+        .eq("id", messageId)
+        .eq("chatId", conversationId)
+        .single()
+        .execute()
+        .data
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="Message not found")
+    if row.get("senderId") != user_id:
+        raise HTTPException(status_code=403, detail="Only message sender can delete this message")
+    supabase.table("messages").update({"deletedAt": datetime.now(timezone.utc).isoformat()}).eq("id", messageId).execute()
     return None
 
 

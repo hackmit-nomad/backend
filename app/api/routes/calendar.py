@@ -80,14 +80,26 @@ def create_event(body: CreateCalendarEventRequest, user_id: str = Depends(get_cu
 
 @router.patch("/events/{eventId}")
 def update_event(eventId: str, body: UpdateCalendarEventRequest, user_id: str = Depends(get_current_user_id)) -> dict[str, Any]:
+    current = (
+        supabase.table("calendar_events")
+        .select("*")
+        .eq("id", eventId)
+        .eq("userId", user_id)
+        .single()
+        .execute()
+        .data
+    )
+    if not current:
+        raise HTTPException(status_code=404, detail="Event not found")
+
     payload = {k: v for k, v in body.model_dump().items() if v is not None}
     if payload.get("date") or payload.get("startTime"):
-        date = payload.get("date") or supabase.table("calendar_events").select("date").eq("id", eventId).single().execute().data.get("date")
-        start_time = payload.get("startTime") or supabase.table("calendar_events").select("startTime").eq("id", eventId).single().execute().data.get("startTime")
+        date = payload.get("date") or current.get("date")
+        start_time = payload.get("startTime") or current.get("startTime")
         payload["startAt"] = f"{date}T{start_time}:00Z"
     if payload.get("date") or payload.get("endTime"):
-        date = payload.get("date") or supabase.table("calendar_events").select("date").eq("id", eventId).single().execute().data.get("date")
-        end_time = payload.get("endTime") or supabase.table("calendar_events").select("endTime").eq("id", eventId).single().execute().data.get("endTime")
+        date = payload.get("date") or current.get("date")
+        end_time = payload.get("endTime") or current.get("endTime")
         payload["endAt"] = f"{date}T{end_time}:00Z"
     payload["updatedAt"] = datetime.now(timezone.utc).isoformat()
 
@@ -99,6 +111,17 @@ def update_event(eventId: str, body: UpdateCalendarEventRequest, user_id: str = 
 
 @router.delete("/events/{eventId}", status_code=204)
 def delete_event(eventId: str, user_id: str = Depends(get_current_user_id)) -> None:
+    row = (
+        supabase.table("calendar_events")
+        .select("id")
+        .eq("id", eventId)
+        .eq("userId", user_id)
+        .single()
+        .execute()
+        .data
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="Event not found")
     supabase.table("calendar_events").delete().eq("id", eventId).eq("userId", user_id).execute()
     return None
 

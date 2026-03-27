@@ -58,6 +58,9 @@ def update_me(body: UpdateUserRequest, user_id: str = Depends(get_current_user_i
 
 @router.delete("/me", status_code=204)
 def delete_me(user_id: str = Depends(get_current_user_id)) -> None:
+    row = supabase.table("profiles").select("id").eq("id", user_id).single().execute().data
+    if not row:
+        raise HTTPException(status_code=404, detail="User not found")
     supabase.table("profiles").delete().eq("id", user_id).execute()
     return None
 
@@ -87,13 +90,14 @@ def list_users(
     items = profiles_resp.data or []
 
     if connected is not None:
-        rel = (
-            supabase.table("friendships")
-            .select("friendId,status")
-            .eq("userId", user_id)
-            .execute()
+        direct = (
+            supabase.table("friendships").select("userId,friendId,status").eq("userId", user_id).execute()
         ).data or []
-        connected_ids = {r["friendId"] for r in rel if r.get("status") == "connected"}
+        reverse = (
+            supabase.table("friendships").select("userId,friendId,status").eq("friendId", user_id).execute()
+        ).data or []
+        connected_ids = {r["friendId"] for r in direct if r.get("status") == "connected"}
+        connected_ids |= {r["userId"] for r in reverse if r.get("status") == "connected"}
         if connected:
             items = [p for p in items if p["id"] in connected_ids]
         else:
@@ -118,51 +122,83 @@ def connect_user(userId: str, me_id: str = Depends(get_current_user_id)) -> dict
     if userId == me_id:
         raise HTTPException(status_code=400, detail="Cannot connect to self")
 
-    existing = (
+    me_to_other = (
         supabase.table("friendships")
         .select("*")
         .eq("userId", me_id)
         .eq("friendId", userId)
         .execute()
     ).data or []
-
-    if not existing:
-        # create pending (outgoing)
-        row = (
-            supabase.table("friendships")
-            .insert({"userId": me_id, "friendId": userId, "status": "pending"})
-            .execute()
-        ).data
-        status = "pending" if row else "pending"
-    else:
-        status = existing[0].get("status") or "none"
-        if status in ("pending", "incoming"):
-            supabase.table("friendships").update({"status": "connected"}).eq("id", existing[0]["id"]).execute()
-            status = "connected"
-
-    return {"userId": userId, "status": _status_to_api(status)}
-
-
-@router.delete("/users/{userId}/connect")
-def disconnect_user(userId: str, me_id: str = Depends(get_current_user_id)) -> dict[str, Any]:
-    existing = (
+    other_to_me = (
         supabase.table("friendships")
-        .select("id")
+        .select("*")
+        .eq("userId", userId)
+        .eq("friendId", me_id)
+        .execute()
+    ).data or []
+
+    if me_to_other and me_to_other[0].get("status") == "connected":
+        return {"userId": userId, "status": "connected"}
+    if other_to_me and other_to_me[0].get("status") == "pending":
+        _set_connected(me_id, userId)
+        return {"userId": userId, "status": "connected"}
+
+    # default request creation: me->other pending, other->me incoming
+    _upsert_edge(me_id, userId, "pending")
+    _upsert_edge(userId, me_id, "incoming")
+    return {"userId": userId, "status": "pending"}
+
+
+@router.post("/users/{userId}/connect/accept")
+def accept_connection(userId: str, me_id: str = Depends(get_current_user_id)) -> dict[str, Any]:
+    incoming = (
+        supabase.table("friendships")
+        .select("*")
         .eq("userId", me_id)
         .eq("friendId", userId)
         .execute()
     ).data or []
-    if existing:
-        supabase.table("friendships").delete().eq("id", existing[0]["id"]).execute()
+    if not incoming or incoming[0].get("status") not in ("incoming", "pending"):
+        raise HTTPException(status_code=404, detail="No pending request from this user")
+
+    _set_connected(me_id, userId)
+    return {"userId": userId, "status": "connected"}
+
+
+@router.post("/users/{userId}/connect/reject")
+def reject_connection(userId: str, me_id: str = Depends(get_current_user_id)) -> dict[str, Any]:
+    _remove_both_edges(me_id, userId)
     return {"userId": userId, "status": "none"}
 
 
-def _status_to_api(db_status: str) -> str:
-    if db_status in ("connected", "pending"):
-        return db_status
-    if db_status == "incoming":
-        return "incoming"
-    return "none"
+@router.delete("/users/{userId}/connect")
+def disconnect_user(userId: str, me_id: str = Depends(get_current_user_id)) -> dict[str, Any]:
+    _remove_both_edges(me_id, userId)
+    return {"userId": userId, "status": "none"}
+
+
+def _set_connected(user_a: str, user_b: str) -> None:
+    _upsert_edge(user_a, user_b, "connected")
+    _upsert_edge(user_b, user_a, "connected")
+
+
+def _upsert_edge(user_a: str, user_b: str, status: str) -> None:
+    existing = (
+        supabase.table("friendships")
+        .select("id")
+        .eq("userId", user_a)
+        .eq("friendId", user_b)
+        .execute()
+    ).data or []
+    if existing:
+        supabase.table("friendships").update({"status": status}).eq("id", existing[0]["id"]).execute()
+    else:
+        supabase.table("friendships").insert({"userId": user_a, "friendId": user_b, "status": status}).execute()
+
+
+def _remove_both_edges(user_a: str, user_b: str) -> None:
+    supabase.table("friendships").delete().eq("userId", user_a).eq("friendId", user_b).execute()
+    supabase.table("friendships").delete().eq("userId", user_b).eq("friendId", user_a).execute()
 
 
 def _profile_to_user(p: dict[str, Any]) -> dict[str, Any]:
