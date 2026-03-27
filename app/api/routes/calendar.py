@@ -44,7 +44,8 @@ def list_events(
     if end:
         query = query.lte("endAt", end)
     rows = query.order("startAt", desc=False).execute().data or []
-    return {"items": [_row_to_api(r) for r in rows]}
+    mapped = [_row_to_api(r) for r in rows]
+    return {"items": mapped, "total": len(mapped)}
 
 
 @router.post("/events", status_code=201)

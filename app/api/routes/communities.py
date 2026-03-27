@@ -3,11 +3,26 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel
 
 from app.api.deps import get_current_user_id
 from app.db.supabase import supabase
 
 router = APIRouter(prefix="/communities", tags=["Communities"])
+
+
+class CreateCommunityRequest(BaseModel):
+    name: str | None = None
+    description: str | None = None
+    icon: str | None = None
+    banner: str | None = None
+    color: str | None = None
+    tags: list[str] | None = None
+    university: str | None = None
+
+
+class UpdateCommunityRequest(CreateCommunityRequest):
+    pass
 
 
 @router.get("")
@@ -35,7 +50,26 @@ def list_communities(
         else:
             items = [c for c in items if c["id"] not in joined_ids]
 
-    return {"items": [_community_to_api(c, user_id) for c in items]}
+    mapped = [_community_to_api(c, user_id) for c in items]
+    return {"items": mapped, "total": len(mapped)}
+
+
+@router.post("", status_code=201)
+def create_community(body: CreateCommunityRequest) -> dict[str, Any]:
+    payload = {
+        "name": body.name or "",
+        "introduction": body.description or "",
+        "description": body.description or "",
+        "icon": body.icon or "",
+        "banner": body.banner,
+        "color": body.color or "",
+        "tags": body.tags or [],
+        "university": body.university,
+    }
+    resp = supabase.table("communities").insert(payload).execute()
+    if not resp.data:
+        raise HTTPException(status_code=500, detail="Failed to create community")
+    return _community_to_api(resp.data[0], "")
 
 
 @router.get("/{communityId}")
@@ -44,6 +78,31 @@ def get_community(communityId: str, user_id: str = Depends(get_current_user_id))
     if not resp.data:
         raise HTTPException(status_code=404, detail="Community not found")
     return _community_to_api(resp.data, user_id)
+
+
+@router.patch("/{communityId}")
+def update_community(communityId: str, body: UpdateCommunityRequest, user_id: str = Depends(get_current_user_id)) -> dict[str, Any]:
+    payload = {
+        "name": body.name,
+        "description": body.description,
+        "introduction": body.description,
+        "icon": body.icon,
+        "banner": body.banner,
+        "color": body.color,
+        "tags": body.tags,
+        "university": body.university,
+    }
+    payload = {k: v for k, v in payload.items() if v is not None}
+    resp = supabase.table("communities").update(payload).eq("id", communityId).execute()
+    if not resp.data:
+        raise HTTPException(status_code=404, detail="Community not found")
+    return _community_to_api(resp.data[0], user_id)
+
+
+@router.delete("/{communityId}", status_code=204)
+def delete_community(communityId: str) -> None:
+    supabase.table("communities").delete().eq("id", communityId).execute()
+    return None
 
 
 @router.post("/{communityId}/join")

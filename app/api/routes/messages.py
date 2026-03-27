@@ -61,7 +61,7 @@ def list_conversations(q: str | None = Query(default=None), user_id: str = Depen
         if not q or q.lower() in convo["lastMessage"].lower():
             items.append(convo)
 
-    return {"items": items}
+    return {"items": items, "total": len(items)}
 
 
 class CreateConversationRequest(BaseModel):
@@ -98,6 +98,59 @@ def create_conversation(body: CreateConversationRequest, user_id: str = Depends(
     }
 
 
+class UpdateConversationRequest(BaseModel):
+    groupName: str | None = None
+
+
+@router.patch("/conversations/{conversationId}")
+def update_conversation(
+    conversationId: str,
+    body: UpdateConversationRequest,
+    user_id: str = Depends(get_current_user_id),
+) -> dict[str, Any]:
+    _assert_is_participant(conversationId, user_id)
+    payload = {k: v for k, v in body.model_dump().items() if v is not None}
+    if payload:
+        supabase.table("chats").update(payload).eq("id", conversationId).execute()
+    chat = supabase.table("chats").select("*").eq("id", conversationId).single().execute().data
+    if not chat:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+
+    participants = (
+        supabase.table("chat_participants").select("userId").eq("chatId", conversationId).execute().data
+    ) or []
+    participant_ids = [p["userId"] for p in participants]
+    last_msg = (
+        supabase.table("messages")
+        .select("*")
+        .eq("chatId", conversationId)
+        .is_("deletedAt", "null")
+        .order("createdAt", desc=True)
+        .limit(1)
+        .execute()
+        .data
+    )
+    last = last_msg[0] if last_msg else None
+    return {
+        "id": conversationId,
+        "participants": participant_ids,
+        "isGroup": chat.get("type") == "group",
+        "groupName": chat.get("groupName"),
+        "lastMessage": last.get("content") if last else "",
+        "lastTimestamp": last.get("createdAt") if last else chat.get("createdAt"),
+        "unread": 0,
+    }
+
+
+@router.delete("/conversations/{conversationId}", status_code=204)
+def delete_conversation(conversationId: str, user_id: str = Depends(get_current_user_id)) -> None:
+    _assert_is_participant(conversationId, user_id)
+    supabase.table("messages").delete().eq("chatId", conversationId).execute()
+    supabase.table("chat_participants").delete().eq("chatId", conversationId).execute()
+    supabase.table("chats").delete().eq("id", conversationId).execute()
+    return None
+
+
 @router.get("/conversations/{conversationId}/messages")
 def list_messages(conversationId: str, user_id: str = Depends(get_current_user_id)) -> dict[str, Any]:
     _assert_is_participant(conversationId, user_id)
@@ -110,7 +163,8 @@ def list_messages(conversationId: str, user_id: str = Depends(get_current_user_i
         .execute()
         .data
     ) or []
-    return {"items": [_msg_to_api(m) for m in msgs]}
+    mapped = [_msg_to_api(m) for m in msgs]
+    return {"items": mapped, "total": len(mapped)}
 
 
 class CreateMessageRequest(BaseModel):
@@ -129,6 +183,13 @@ def send_message(conversationId: str, body: CreateMessageRequest, user_id: str =
     if not resp.data:
         raise HTTPException(status_code=500, detail="Failed to send message")
     return _msg_to_api(resp.data[0])
+
+
+@router.delete("/conversations/{conversationId}/messages/{messageId}", status_code=204)
+def delete_message(conversationId: str, messageId: str, user_id: str = Depends(get_current_user_id)) -> None:
+    _assert_is_participant(conversationId, user_id)
+    supabase.table("messages").delete().eq("id", messageId).eq("chatId", conversationId).execute()
+    return None
 
 
 def _assert_is_participant(chat_id: str, user_id: str) -> None:

@@ -76,6 +76,12 @@ class CreateReplyRequest(BaseModel):
     content: str
 
 
+class UpdatePostRequest(BaseModel):
+    title: str | None = None
+    content: str | None = None
+    tags: list[str] | None = None
+
+
 @router.post("/posts/{postId}/replies", status_code=201)
 def reply_to_post(postId: str, body: CreateReplyRequest, user_id: str = Depends(get_current_user_id)) -> dict[str, Any]:
     now = datetime.now(timezone.utc).isoformat()
@@ -105,6 +111,21 @@ def reply_to_post(postId: str, body: CreateReplyRequest, user_id: str = Depends(
         "likes": 0,
         "isLiked": False,
     }
+
+
+@router.patch("/posts/{postId}")
+def update_post(postId: str, body: UpdatePostRequest, user_id: str = Depends(get_current_user_id)) -> dict[str, Any]:
+    payload = {k: v for k, v in body.model_dump().items() if v is not None}
+    resp = supabase.table("posts").update(payload).eq("id", postId).eq("authorId", user_id).execute()
+    if not resp.data:
+        raise HTTPException(status_code=404, detail="Post not found")
+    return _post_to_api(resp.data[0], user_id)
+
+
+@router.delete("/posts/{postId}", status_code=204)
+def delete_post(postId: str, user_id: str = Depends(get_current_user_id)) -> None:
+    supabase.table("posts").delete().eq("id", postId).eq("authorId", user_id).execute()
+    return None
 
 
 def _post_to_api(p: dict[str, Any], user_id: str) -> dict[str, Any]:
@@ -145,7 +166,6 @@ def _post_to_api(p: dict[str, Any], user_id: str) -> dict[str, Any]:
         "timestamp": p.get("createdAt"),
         "likes": likes,
         "isLiked": bool(my and my.get("reaction") == "like"),
-        "myReaction": my.get("reaction") if my else None,
         "tags": p.get("tags") or [],
         "replies": replies,
     }

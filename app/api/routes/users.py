@@ -56,6 +56,12 @@ def update_me(body: UpdateUserRequest, user_id: str = Depends(get_current_user_i
     return _profile_to_user(resp.data[0])
 
 
+@router.delete("/me", status_code=204)
+def delete_me(user_id: str = Depends(get_current_user_id)) -> None:
+    supabase.table("profiles").delete().eq("id", user_id).execute()
+    return None
+
+
 @router.get("/users")
 def list_users(
     q: str | None = Query(default=None),

@@ -1,0 +1,1052 @@
+openapi: 3.0.3
+info:
+  title: Nomad API (MVP)
+  version: 1.0.0
+  description: |
+    MVP API contract for Nomad (course planning + student social network).
+    This spec is designed for Swagger UI / OpenAPI tooling and reflects
+    the current product surface in the frontend.
+servers:
+  - url: http://localhost:3000/api
+    description: Local dev
+  - url: https://api.nomad.example.com
+    description: Production (placeholder)
+tags:
+  - name: Auth
+  - name: Users
+  - name: Courses
+  - name: Planner
+  - name: Communities
+  - name: Feed
+  - name: Messages
+  - name: Calendar
+  - name: Notifications
+  - name: Onboarding
+  - name: Search
+security:
+  - bearerAuth: []
+paths:
+  /auth/signup:
+    post:
+      tags: [Auth]
+      summary: Create account
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SignupRequest"
+      responses:
+        "201":
+          description: Account created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+  /auth/login:
+    post:
+      tags: [Auth]
+      summary: Login with email/password
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LoginRequest"
+      responses:
+        "200":
+          description: Authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /auth/logout:
+    post:
+      tags: [Auth]
+      summary: Logout current session
+      responses:
+        "204":
+          description: Logged out
+  /me:
+    get:
+      tags: [Users]
+      summary: Get current user profile
+      responses:
+        "200":
+          description: Current user
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+    patch:
+      tags: [Users]
+      summary: Update current user profile
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateUserRequest"
+      responses:
+        "200":
+          description: Updated user
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+  /users:
+    get:
+      tags: [Users]
+      summary: Discover/search users
+      parameters:
+        - in: query
+          name: q
+          schema: { type: string }
+        - in: query
+          name: university
+          schema: { type: string }
+        - in: query
+          name: major
+          schema: { type: string }
+        - in: query
+          name: year
+          schema: { type: string }
+        - in: query
+          name: connected
+          schema: { type: boolean }
+      responses:
+        "200":
+          description: Users list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/User" }
+                  total:
+                    type: integer
+  /users/{userId}:
+    get:
+      tags: [Users]
+      summary: Get user profile by ID
+      parameters:
+        - $ref: "#/components/parameters/UserId"
+      responses:
+        "200":
+          description: User profile
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserProfile"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /users/{userId}/connect:
+    post:
+      tags: [Users]
+      summary: Send/accept connection
+      parameters:
+        - $ref: "#/components/parameters/UserId"
+      responses:
+        "200":
+          description: Connection status updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConnectionStatusResponse"
+    delete:
+      tags: [Users]
+      summary: Remove connection
+      parameters:
+        - $ref: "#/components/parameters/UserId"
+      responses:
+        "200":
+          description: Connection removed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConnectionStatusResponse"
+
+  /courses:
+    get:
+      tags: [Courses]
+      summary: List courses
+      parameters:
+        - in: query
+          name: q
+          schema: { type: string }
+        - in: query
+          name: department
+          schema: { type: string }
+        - in: query
+          name: difficulty
+          schema:
+            type: string
+            enum: [Intro, Intermediate, Advanced, Graduate]
+      responses:
+        "200":
+          description: Courses list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/Course" }
+                  total:
+                    type: integer
+  /courses/{courseId}:
+    get:
+      tags: [Courses]
+      summary: Get course details
+      parameters:
+        - $ref: "#/components/parameters/CourseId"
+      responses:
+        "200":
+          description: Course details
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CourseDetails"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /courses/{courseId}/students:
+    get:
+      tags: [Courses]
+      summary: Get enrolled classmates
+      parameters:
+        - $ref: "#/components/parameters/CourseId"
+        - in: query
+          name: connected
+          schema: { type: boolean }
+      responses:
+        "200":
+          description: Enrolled students
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  courseId: { type: string }
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/User" }
+                  total:
+                    type: integer
+  /courses/{courseId}/connections:
+    get:
+      tags: [Courses]
+      summary: People you know vs suggested in a course
+      parameters:
+        - $ref: "#/components/parameters/CourseId"
+      responses:
+        "200":
+          description: Course connection buckets
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  known:
+                    type: array
+                    items: { $ref: "#/components/schemas/User" }
+                  suggested:
+                    type: array
+                    items: { $ref: "#/components/schemas/User" }
+
+  /planner/courses:
+    get:
+      tags: [Planner]
+      summary: Get current planned course IDs
+      responses:
+        "200":
+          description: Planned courses
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PlannerState"
+    put:
+      tags: [Planner]
+      summary: Replace planned courses
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdatePlannerRequest"
+      responses:
+        "200":
+          description: Updated plan
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PlannerState"
+
+  /communities:
+    get:
+      tags: [Communities]
+      summary: List communities
+      parameters:
+        - in: query
+          name: q
+          schema: { type: string }
+        - in: query
+          name: joined
+          schema: { type: boolean }
+      responses:
+        "200":
+          description: Communities list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/Community" }
+  /communities/{communityId}:
+    get:
+      tags: [Communities]
+      summary: Get community details
+      parameters:
+        - $ref: "#/components/parameters/CommunityId"
+      responses:
+        "200":
+          description: Community details
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Community"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /communities/{communityId}/join:
+    post:
+      tags: [Communities]
+      summary: Join community
+      parameters:
+        - $ref: "#/components/parameters/CommunityId"
+      responses:
+        "200":
+          description: Joined
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  isJoined: { type: boolean, example: true }
+    delete:
+      tags: [Communities]
+      summary: Leave community
+      parameters:
+        - $ref: "#/components/parameters/CommunityId"
+      responses:
+        "200":
+          description: Left
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  isJoined: { type: boolean, example: false }
+
+  /posts:
+    get:
+      tags: [Feed]
+      summary: List feed posts
+      parameters:
+        - in: query
+          name: tab
+          schema:
+            type: string
+            enum: [all, following, top]
+        - in: query
+          name: communityId
+          schema: { type: string }
+      responses:
+        "200":
+          description: Feed posts
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/Post" }
+                  total:
+                    type: integer
+    post:
+      tags: [Feed]
+      summary: Create post
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreatePostRequest"
+      responses:
+        "201":
+          description: Post created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Post"
+  /posts/{postId}/reactions:
+    post:
+      tags: [Feed]
+      summary: Add or change reaction
+      parameters:
+        - $ref: "#/components/parameters/PostId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reaction]
+              properties:
+                reaction:
+                  type: string
+                  enum: [like, celebrate, insightful, curious, support]
+      responses:
+        "200":
+          description: Reaction applied
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Post"
+  /posts/{postId}/replies:
+    post:
+      tags: [Feed]
+      summary: Reply to post
+      parameters:
+        - $ref: "#/components/parameters/PostId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateReplyRequest"
+      responses:
+        "201":
+          description: Reply created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Reply"
+
+  /messages/conversations:
+    get:
+      tags: [Messages]
+      summary: List conversations
+      parameters:
+        - in: query
+          name: q
+          schema: { type: string }
+      responses:
+        "200":
+          description: Conversations
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/Conversation" }
+    post:
+      tags: [Messages]
+      summary: Start direct/group conversation
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateConversationRequest"
+      responses:
+        "201":
+          description: Conversation created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Conversation"
+  /messages/conversations/{conversationId}/messages:
+    get:
+      tags: [Messages]
+      summary: Get messages in a conversation
+      parameters:
+        - $ref: "#/components/parameters/ConversationId"
+      responses:
+        "200":
+          description: Message list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/Message" }
+    post:
+      tags: [Messages]
+      summary: Send message
+      parameters:
+        - $ref: "#/components/parameters/ConversationId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateMessageRequest"
+      responses:
+        "201":
+          description: Message sent
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Message"
+
+  /calendar/events:
+    get:
+      tags: [Calendar]
+      summary: List calendar events
+      parameters:
+        - in: query
+          name: start
+          schema: { type: string, format: date-time }
+        - in: query
+          name: end
+          schema: { type: string, format: date-time }
+      responses:
+        "200":
+          description: Events list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/CalendarEvent" }
+    post:
+      tags: [Calendar]
+      summary: Create event
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateCalendarEventRequest"
+      responses:
+        "201":
+          description: Event created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CalendarEvent"
+  /calendar/events/{eventId}:
+    patch:
+      tags: [Calendar]
+      summary: Update event
+      parameters:
+        - in: path
+          name: eventId
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateCalendarEventRequest"
+      responses:
+        "200":
+          description: Event updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CalendarEvent"
+    delete:
+      tags: [Calendar]
+      summary: Delete event
+      parameters:
+        - in: path
+          name: eventId
+          required: true
+          schema: { type: string }
+      responses:
+        "204":
+          description: Event deleted
+
+  /notifications:
+    get:
+      tags: [Notifications]
+      summary: Get notifications
+      responses:
+        "200":
+          description: Notifications list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/Notification" }
+                  unread:
+                    type: integer
+  /notifications/read-all:
+    post:
+      tags: [Notifications]
+      summary: Mark all notifications as read
+      responses:
+        "204":
+          description: Marked read
+  /notifications/{notificationId}/read:
+    post:
+      tags: [Notifications]
+      summary: Mark single notification as read
+      parameters:
+        - in: path
+          name: notificationId
+          required: true
+          schema: { type: string }
+      responses:
+        "204":
+          description: Marked read
+
+  /onboarding/options:
+    get:
+      tags: [Onboarding]
+      summary: Get onboarding options (universities, majors, interests)
+      security: []
+      responses:
+        "200":
+          description: Option catalogs
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  universities:
+                    type: array
+                    items: { type: string }
+                  majors:
+                    type: array
+                    items: { type: string }
+                  interests:
+                    type: array
+                    items: { type: string }
+  /onboarding/complete:
+    post:
+      tags: [Onboarding]
+      summary: Complete onboarding
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/OnboardingCompleteRequest"
+      responses:
+        "200":
+          description: Onboarding saved
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+
+  /search:
+    get:
+      tags: [Search]
+      summary: Global search across users/courses/communities/posts
+      parameters:
+        - in: query
+          name: q
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Search results
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SearchResponse"
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  parameters:
+    UserId:
+      in: path
+      name: userId
+      required: true
+      schema: { type: string }
+    CourseId:
+      in: path
+      name: courseId
+      required: true
+      schema: { type: string }
+    CommunityId:
+      in: path
+      name: communityId
+      required: true
+      schema: { type: string }
+    PostId:
+      in: path
+      name: postId
+      required: true
+      schema: { type: string }
+    ConversationId:
+      in: path
+      name: conversationId
+      required: true
+      schema: { type: string }
+  responses:
+    BadRequest:
+      description: Invalid request
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorResponse" }
+    Unauthorized:
+      description: Unauthorized
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorResponse" }
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorResponse" }
+  schemas:
+    ErrorResponse:
+      type: object
+      required: [code, message]
+      properties:
+        code: { type: string, example: NOT_FOUND }
+        message: { type: string, example: Resource not found }
+    SignupRequest:
+      type: object
+      required: [name, email, password]
+      properties:
+        name: { type: string }
+        email: { type: string, format: email }
+        password: { type: string, minLength: 8 }
+    LoginRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email: { type: string, format: email }
+        password: { type: string }
+    AuthResponse:
+      type: object
+      required: [accessToken, user]
+      properties:
+        accessToken: { type: string }
+        refreshToken: { type: string }
+        user: { $ref: "#/components/schemas/User" }
+    UpdateUserRequest:
+      type: object
+      properties:
+        name: { type: string }
+        bio: { type: string }
+        headline: { type: string }
+        major: { type: string }
+        minor: { type: string }
+        year: { type: string }
+        interests:
+          type: array
+          items: { type: string }
+    ConnectionStatusResponse:
+      type: object
+      properties:
+        userId: { type: string }
+        status:
+          type: string
+          enum: [none, pending, incoming, connected]
+    User:
+      type: object
+      required: [id, name, avatar, university, major, year]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        avatar: { type: string, format: uri }
+        university: { type: string }
+        major: { type: string }
+        minor: { type: string, nullable: true }
+        year: { type: string }
+        bio: { type: string }
+        headline: { type: string, nullable: true }
+        interests:
+          type: array
+          items: { type: string }
+        courses:
+          type: array
+          items: { type: string }
+        communities:
+          type: array
+          items: { type: string }
+        isConnected: { type: boolean }
+        isOnline: { type: boolean }
+        profileViews: { type: integer }
+    UserProfile:
+      allOf:
+        - $ref: "#/components/schemas/User"
+        - type: object
+          properties:
+            skills:
+              type: array
+              items: { $ref: "#/components/schemas/Skill" }
+            experience:
+              type: array
+              items: { $ref: "#/components/schemas/Experience" }
+    Skill:
+      type: object
+      properties:
+        name: { type: string }
+        endorsements: { type: integer }
+        endorsedBy:
+          type: array
+          items: { type: string }
+    Experience:
+      type: object
+      properties:
+        title: { type: string }
+        company: { type: string }
+        period: { type: string }
+        description: { type: string }
+        type:
+          type: string
+          enum: [internship, research, club, project]
+    Course:
+      type: object
+      required: [id, code, title, credits, difficulty]
+      properties:
+        id: { type: string }
+        code: { type: string }
+        title: { type: string }
+        credits: { type: integer }
+        description: { type: string }
+        department: { type: string }
+        difficulty:
+          type: string
+          enum: [Intro, Intermediate, Advanced, Graduate]
+        prerequisites:
+          type: array
+          items: { type: string }
+        nextCourses:
+          type: array
+          items: { type: string }
+        tags:
+          type: array
+          items: { type: string }
+        rating: { type: number, format: float }
+        students:
+          type: array
+          items: { type: string }
+    CourseDetails:
+      allOf:
+        - $ref: "#/components/schemas/Course"
+        - type: object
+          properties:
+            knownClassmates:
+              type: array
+              items: { $ref: "#/components/schemas/User" }
+            suggestedClassmates:
+              type: array
+              items: { $ref: "#/components/schemas/User" }
+    PlannerState:
+      type: object
+      properties:
+        courseIds:
+          type: array
+          items: { type: string }
+    UpdatePlannerRequest:
+      type: object
+      required: [courseIds]
+      properties:
+        courseIds:
+          type: array
+          items: { type: string }
+    Community:
+      type: object
+      properties:
+        id: { type: string }
+        name: { type: string }
+        description: { type: string }
+        icon: { type: string, format: uri }
+        banner: { type: string, format: uri, nullable: true }
+        color: { type: string }
+        members: { type: integer }
+        posts: { type: integer }
+        tags:
+          type: array
+          items: { type: string }
+        isJoined: { type: boolean }
+        university: { type: string, nullable: true }
+    Post:
+      type: object
+      properties:
+        id: { type: string }
+        authorId: { type: string }
+        communityId: { type: string }
+        title: { type: string }
+        content: { type: string }
+        timestamp: { type: string, format: date-time }
+        likes: { type: integer }
+        isLiked: { type: boolean }
+        myReaction:
+          type: string
+          enum: [like, celebrate, insightful, curious, support]
+          nullable: true
+        tags:
+          type: array
+          items: { type: string }
+        replies:
+          type: array
+          items: { $ref: "#/components/schemas/Reply" }
+    Reply:
+      type: object
+      properties:
+        id: { type: string }
+        authorId: { type: string }
+        content: { type: string }
+        timestamp: { type: string, format: date-time }
+        likes: { type: integer }
+        isLiked: { type: boolean }
+    CreatePostRequest:
+      type: object
+      required: [communityId, title, content]
+      properties:
+        communityId: { type: string }
+        title: { type: string }
+        content: { type: string }
+        tags:
+          type: array
+          items: { type: string }
+    CreateReplyRequest:
+      type: object
+      required: [content]
+      properties:
+        content: { type: string }
+    Conversation:
+      type: object
+      properties:
+        id: { type: string }
+        participants:
+          type: array
+          items: { type: string }
+        isGroup: { type: boolean }
+        groupName: { type: string, nullable: true }
+        lastMessage: { type: string }
+        lastTimestamp: { type: string, format: date-time }
+        unread: { type: integer }
+    Message:
+      type: object
+      properties:
+        id: { type: string }
+        senderId: { type: string }
+        content: { type: string }
+        timestamp: { type: string, format: date-time }
+    CreateConversationRequest:
+      type: object
+      required: [participants]
+      properties:
+        participants:
+          type: array
+          minItems: 1
+          items: { type: string }
+        isGroup: { type: boolean, default: false }
+        groupName: { type: string, nullable: true }
+    CreateMessageRequest:
+      type: object
+      required: [content]
+      properties:
+        content: { type: string }
+    CalendarEvent:
+      type: object
+      properties:
+        id: { type: string }
+        title: { type: string }
+        date: { type: string, format: date }
+        startTime: { type: string, example: "10:00" }
+        endTime: { type: string, example: "11:30" }
+        location: { type: string, nullable: true }
+        type:
+          type: string
+          enum: [class, study, social, deadline, custom]
+        color: { type: string }
+    CreateCalendarEventRequest:
+      type: object
+      required: [title, date, startTime, endTime, type]
+      properties:
+        title: { type: string }
+        date: { type: string, format: date }
+        startTime: { type: string }
+        endTime: { type: string }
+        location: { type: string }
+        type:
+          type: string
+          enum: [class, study, social, deadline, custom]
+    UpdateCalendarEventRequest:
+      type: object
+      properties:
+        title: { type: string }
+        date: { type: string, format: date }
+        startTime: { type: string }
+        endTime: { type: string }
+        location: { type: string }
+        type:
+          type: string
+          enum: [class, study, social, deadline, custom]
+    Notification:
+      type: object
+      properties:
+        id: { type: string }
+        type:
+          type: string
+          enum: [connection_request, endorsement, post_reaction, mention, profile_view]
+        fromId: { type: string }
+        content: { type: string }
+        timestamp: { type: string, format: date-time }
+        read: { type: boolean }
+    OnboardingCompleteRequest:
+      type: object
+      required: [university, fullName, majors]
+      properties:
+        university: { type: string }
+        fullName: { type: string }
+        majors:
+          type: array
+          items: { type: string }
+        minors:
+          type: array
+          items: { type: string }
+        interests:
+          type: array
+          items: { type: string }
+    SearchResponse:
+      type: object
+      properties:
+        users:
+          type: array
+          items: { $ref: "#/components/schemas/User" }
+        courses:
+          type: array
+          items: { $ref: "#/components/schemas/Course" }
+        communities:
+          type: array
+          items: { $ref: "#/components/schemas/Community" }
+        posts:
+          type: array
+          items: { $ref: "#/components/schemas/Post" }

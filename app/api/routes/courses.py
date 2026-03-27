@@ -11,6 +11,22 @@ from app.db.supabase import supabase
 router = APIRouter(prefix="/courses", tags=["Courses"])
 
 
+class CreateCourseRequest(BaseModel):
+    code: str | None = None
+    title: str | None = None
+    credits: int | None = None
+    description: str | None = None
+    prerequisites: list[str] | None = None
+    nextCourses: list[str] | None = None
+    department: str | None = None
+    difficulty: str | None = None
+    tags: list[str] | None = None
+
+
+class UpdateCourseRequest(CreateCourseRequest):
+    pass
+
+
 @router.get("")
 def list_courses(
     q: str | None = Query(default=None),
@@ -28,6 +44,34 @@ def list_courses(
     resp = query.execute()
     items = resp.data or []
     return {"items": [_cv_to_course(c) for c in items], "total": len(items)}
+
+
+@router.post("", status_code=201)
+def create_course(body: CreateCourseRequest) -> dict[str, Any]:
+    payload = {
+        "code": body.code or "",
+        "title": body.title or "",
+        "credits": body.credits or 0,
+        "description": body.description or "",
+        "department": body.department or "",
+        "difficulty": body.difficulty or "Intro",
+        "tags": body.tags or [],
+    }
+    resp = supabase.table("course_versions").insert(payload).execute()
+    if not resp.data:
+        raise HTTPException(status_code=500, detail="Failed to create course")
+    row = resp.data[0]
+    cid = row["id"]
+
+    for pid in body.prerequisites or []:
+        supabase.table("course_prerequisite_edges").insert(
+            {"courseVersionId": cid, "prerequisiteCourseVersionId": pid, "relationType": "required"}
+        ).execute()
+    for nid in body.nextCourses or []:
+        supabase.table("course_prerequisite_edges").insert(
+            {"courseVersionId": nid, "prerequisiteCourseVersionId": cid, "relationType": "required"}
+        ).execute()
+    return _cv_to_course(row)
 
 
 @router.get("/{courseId}")
@@ -62,6 +106,25 @@ def get_course_details(courseId: str, user_id: str = Depends(get_current_user_id
     details["knownClassmates"] = known
     details["suggestedClassmates"] = suggested
     return details
+
+
+@router.patch("/{courseId}")
+def update_course(courseId: str, body: UpdateCourseRequest) -> dict[str, Any]:
+    payload = {k: v for k, v in body.model_dump().items() if v is not None and k not in ("prerequisites", "nextCourses")}
+    if payload:
+        resp = supabase.table("course_versions").update(payload).eq("id", courseId).execute()
+        if not resp.data:
+            raise HTTPException(status_code=404, detail="Course not found")
+    row = supabase.table("course_versions").select("*").eq("id", courseId).single().execute().data
+    if not row:
+        raise HTTPException(status_code=404, detail="Course not found")
+    return _cv_to_course(row)
+
+
+@router.delete("/{courseId}", status_code=204)
+def delete_course(courseId: str) -> None:
+    supabase.table("course_versions").delete().eq("id", courseId).execute()
+    return None
 
 
 @router.get("/{courseId}/students")
