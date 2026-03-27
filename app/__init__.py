@@ -1,1 +1,2 @@
-# Nomad backend package
+"""Nomad backend application package."""
+
