@@ -1,0 +1,451 @@
+// Modified ER diagram based on original schema + updated OpenAPI needs
+// Changes are marked with [NEW] or [UPDATED]
+
+profiles [icon: user, color: green] {
+ id uuid pk
+ email string
+ displayName string
+ avatarUrl string
+ university string // [UPDATED]
+ major string // [UPDATED]
+ minor string // [UPDATED]
+ year string // [UPDATED]
+ bio string // [UPDATED]
+ headline string // [UPDATED]
+ interests json // [UPDATED] string[]
+ isOnline boolean // [UPDATED]
+ profileViews int // [UPDATED]
+ createdAt timestamp
+ updatedAt timestamp
+}
+
+user_privacy_settings [icon: lock, color: green] {
+ userId uuid pk
+ shareCoursesWithFriends boolean
+ shareScheduleWithFriends boolean
+ shareProgramWithFriends boolean
+ allowFriendRequests boolean
+ allowNfcDiscovery boolean
+ updatedAt timestamp
+}
+
+profiles.id <> user_privacy_settings.userId
+
+schools [icon: building, color: blue] {
+ id uuid pk
+ name string
+ country string
+ website string
+ timezone string
+ meta json
+ createdAt timestamp
+}
+
+programs [icon: book, color: blue] {
+ id uuid pk
+ schoolId uuid
+ name string
+ degreeLevel string
+ departmentName string
+ createdAt timestamp
+}
+
+program_versions [icon: git-branch, color: blue] {
+ id uuid pk
+ programId uuid
+ catalogYear int
+ versionLabel string
+ sourceType string
+ sourceUrl string
+ sourceFilePath string
+ sourceHash string
+ status string
+ errorMsg string
+ processedAt timestamp
+ createdAt timestamp
+ updatedAt timestamp
+}
+
+program_requirement_categories [icon: folder, color: blue] {
+ id uuid pk
+ programVersionId uuid
+ parentId uuid
+ name string
+ categoryType string
+ minCourses int
+ minCredits number
+ maxCourses int
+ note string
+ sortOrder int
+}
+
+courses [icon: layers, color: blue] {
+ id uuid pk
+ schoolId uuid
+ canonicalCode string
+ canonicalName string
+ normalizedCode string
+ normalizedName string
+ subjectCode string
+ courseNumber string
+ creditsDefault number
+ description string // [UPDATED]
+ department string // [UPDATED] optional denormalized subjectCode
+ difficulty string // [UPDATED] Intro|Intermediate|Advanced|Graduate
+ prerequisites json // [UPDATED] string[] cache for API
+ nextCourses json // [UPDATED] string[] cache for API
+ tags json // [UPDATED] string[]
+ rating number // [UPDATED]
+ createdAt timestamp
+ updatedAt timestamp
+}
+
+course_versions [icon: calendar, color: blue] {
+ id uuid pk
+ courseId uuid
+ catalogYear int
+ code string
+ title string
+ description string
+ credits number
+ hours string
+ language string
+ grading string
+ rawText string
+ sourceProgramVersionId uuid
+ createdAt timestamp
+ updatedAt timestamp
+}
+
+program_course_requirements [icon: link, color: blue] {
+ id uuid pk
+ categoryId uuid
+ programVersionId uuid
+ courseVersionId uuid
+ requirementType string
+ termRecommendation string
+ creditsCounted number
+ note string
+ createdAt timestamp
+}
+
+course_prerequisite_rules [icon: file-text, color: blue] {
+ id uuid pk
+ courseVersionId uuid
+ rawText string
+ parsedJson json
+ createdAt timestamp
+}
+
+course_prerequisite_edges [icon: corner-down-left, color: blue] {
+ id uuid pk
+ courseVersionId uuid
+ prerequisiteCourseVersionId uuid
+ relationType string
+ groupNo int
+ minGrade string
+ note string
+}
+
+course_sections [icon: layout, color: blue] {
+ id uuid pk
+ schoolId uuid
+ courseVersionId uuid
+ termCode string
+ sectionCode string
+ instructor string
+ capacity number
+ campus string
+ deliveryMode string
+ uniqueKey string
+ createdAt timestamp
+}
+
+meeting_times [icon: clock, color: blue] {
+ id uuid pk
+ sectionId uuid
+ dayOfWeek int
+ startTime string
+ endTime string
+ timezone string
+ startDate date
+ endDate date
+ location string
+ locationExtra json
+ recurrence string
+ weeks string
+}
+
+processing_jobs [icon: cpu, color: blue] {
+ id uuid pk
+ userId uuid
+ schoolId uuid
+ programVersionId uuid
+ jobType string
+ status string
+ inputPayload json
+ outputPayload json
+ errorMsg string
+ createdAt timestamp
+ startedAt timestamp
+ finishedAt timestamp
+}
+
+course_merge_candidates [icon: shuffle, color: blue] {
+ id uuid pk
+ schoolId uuid
+ leftCourseId uuid
+ rightCourseId uuid
+ score number
+ reason json
+ decidedStatus string
+ decidedBy uuid
+ decidedAt timestamp
+ createdAt timestamp
+}
+
+user_programs [icon: id-card, color: blue] {
+ id uuid pk
+ userId uuid
+ schoolId uuid
+ programId uuid
+ programVersionId uuid
+ startYear int
+ expectedGradYear int
+ isPrimary boolean
+ status string
+ createdAt timestamp
+}
+
+user_courses [icon: check-square, color: blue] {
+ id uuid pk
+ userId uuid
+ courseId uuid
+ courseVersionId uuid
+ status string
+ grade string
+ termCode string
+ source string
+ createdAt timestamp
+ updatedAt timestamp
+}
+
+user_term_plans [icon: calendar, color: blue] {
+ id uuid pk
+ userId uuid
+ termCode string
+ title string
+ status string
+ createdAt timestamp
+ updatedAt timestamp
+}
+
+user_term_plan_sections [icon: list, color: blue] {
+ id uuid pk
+ planId uuid
+ sectionId uuid
+ priority int
+ status string
+ createdAt timestamp
+}
+
+// [NEW] Dedicated calendar events required by /calendar/events APIs
+calendar_events [icon: calendar, color: blue] {
+ id uuid pk
+ userId uuid
+ title string
+ date date
+ startTime string
+ endTime string
+ location string
+ type string // class|study|social|deadline|custom
+ color string
+ createdAt timestamp
+ updatedAt timestamp
+}
+
+profiles.id <> calendar_events.userId
+
+profiles.id <> processing_jobs.userId
+profiles.id <> user_programs.userId
+profiles.id <> user_courses.userId
+profiles.id <> user_term_plans.userId
+profiles.id <> course_merge_candidates.decidedBy
+
+schools.id <> programs.schoolId
+programs.id <> program_versions.programId
+program_versions.id <> program_requirement_categories.programVersionId
+program_requirement_categories.parentId > program_requirement_categories.id
+schools.id <> courses.schoolId
+courses.id <> course_versions.courseId
+program_versions.id <> course_versions.sourceProgramVersionId
+program_requirement_categories.id <> program_course_requirements.categoryId
+program_versions.id <> program_course_requirements.programVersionId
+course_versions.id <> program_course_requirements.courseVersionId
+course_versions.id <> course_prerequisite_rules.courseVersionId
+course_versions.id <> course_prerequisite_edges.courseVersionId
+course_versions.id <> course_prerequisite_edges.prerequisiteCourseVersionId
+schools.id <> course_sections.schoolId
+course_versions.id <> course_sections.courseVersionId
+course_sections.id <> meeting_times.sectionId
+schools.id <> processing_jobs.schoolId
+program_versions.id <> processing_jobs.programVersionId
+schools.id <> course_merge_candidates.schoolId
+courses.id <> course_merge_candidates.leftCourseId
+courses.id <> course_merge_candidates.rightCourseId
+schools.id <> user_programs.schoolId
+programs.id <> user_programs.programId
+program_versions.id <> user_programs.programVersionId
+courses.id <> user_courses.courseId
+course_versions.id <> user_courses.courseVersionId
+user_term_plans.id <> user_term_plan_sections.planId
+course_sections.id <> user_term_plan_sections.sectionId
+
+nfc_tags [icon: smartphone, color: orange] {
+ id uuid pk
+ tagUid string
+ claimedByUserId uuid
+ claimedAt timestamp
+ status string
+ createdAt timestamp
+}
+
+nfc_scan_logs [icon: radio, color: orange] {
+ id uuid pk
+ tagId uuid
+ scannedByUserId uuid
+ action string
+ meta json
+ createdAt timestamp
+}
+
+friendships [icon: user-plus, color: orange] {
+ id uuid pk
+ userId uuid
+ friendId uuid
+ status string // pending|accepted|blocked
+ createdAt timestamp
+ updatedAt timestamp
+}
+
+chats [icon: message-circle, color: orange] {
+ id uuid pk
+ type string // direct|group
+ groupName string // [UPDATED]
+ createdAt timestamp
+}
+
+chat_participants [icon: users, color: orange] {
+ chatId uuid
+ userId uuid
+ joinedAt timestamp
+ lastReadMessageId uuid
+}
+
+messages [icon: send, color: orange] {
+ id uuid pk
+ chatId uuid
+ senderId uuid
+ content string
+ createdAt timestamp
+ updatedAt timestamp
+ deletedAt timestamp
+}
+
+profiles.id <> nfc_tags.claimedByUserId
+nfc_tags.id <> nfc_scan_logs.tagId
+profiles.id <> nfc_scan_logs.scannedByUserId
+profiles.id <> friendships.userId
+profiles.id <> friendships.friendId
+chats.id <> chat_participants.chatId
+profiles.id <> chat_participants.userId
+chats.id <> messages.chatId
+profiles.id <> messages.senderId
+
+communities [icon: users, color: purple] {
+ id uuid pk
+ slug string
+ name string
+ introduction string
+ icon string
+ banner string // [UPDATED]
+ color string // [UPDATED]
+ tags json // [UPDATED] string[]
+ university string // [UPDATED]
+ createdAt timestamp
+}
+
+// [NEW] community membership for join/leave and joined filter
+community_memberships [icon: user-check, color: purple] {
+ id uuid pk
+ communityId uuid
+ userId uuid
+ role string
+ createdAt timestamp
+}
+
+posts [icon: file-text, color: purple] {
+ id uuid pk
+ authorId uuid
+ communityId uuid
+ title string // [UPDATED]
+ content string
+ attachments json
+ tags json // [UPDATED]
+ likesCount int // [UPDATED]
+ createdAt timestamp
+ updatedAt timestamp
+ deletedAt timestamp
+}
+
+comments [icon: message-square, color: purple] {
+ id uuid pk
+ postId uuid
+ authorId uuid
+ parentCommentId uuid
+ content string
+ likesCount int // [UPDATED]
+ createdAt timestamp
+ updatedAt timestamp
+ deletedAt timestamp
+}
+
+// [NEW] per-user reactions required for myReaction / isLiked
+post_reactions [icon: heart, color: purple] {
+ postId uuid
+ userId uuid
+ reaction string // like|celebrate|insightful|curious|support
+ createdAt timestamp
+}
+
+comment_reactions [icon: arrow-up-circle, color: purple] {
+ commentId uuid
+ userId uuid
+ value number
+ createdAt timestamp
+}
+
+// [NEW] notifications API backing table
+notifications [icon: bell, color: purple] {
+ id uuid pk
+ userId uuid
+ type string // connection_request|endorsement|post_reaction|mention|profile_view
+ fromId uuid
+ content string
+ read boolean
+ createdAt timestamp
+}
+
+profiles.id <> posts.authorId
+communities.id <> posts.communityId
+posts.id <> comments.postId
+profiles.id <> comments.authorId
+comments.parentCommentId > comments.id
+posts.id <> post_reactions.postId
+profiles.id <> post_reactions.userId
+comments.id <> comment_reactions.commentId
+profiles.id <> comment_reactions.userId
+communities.id <> community_memberships.communityId
+profiles.id <> community_memberships.userId
+profiles.id <> notifications.userId
+profiles.id <> notifications.fromId
