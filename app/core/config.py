@@ -8,6 +8,6 @@ def env(name: str, default: str | None = None) -> str:
     return val
 
 
-SUPABASE_URL = env("SUPABASE_URL", "")
-SUPABASE_KEY = env("SUPABASE_KEY", "")
+SUPABASE_URL = "https://hcvisecwcgupinlqghgr.supabase.co"
+SUPABASE_KEY = "sb_secret_QM2gtIIyrVf_i4cppw2IAw_WGzn7HuV"
 
