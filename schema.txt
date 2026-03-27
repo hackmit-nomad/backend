@@ -325,10 +325,19 @@ friendships [icon: user-plus, color: orange] {
  id uuid pk
  userId uuid
  friendId uuid
- status string     // none/pending/incoming/connected
+ status string     // pending/incoming/connected
+ requestedBy uuid  // who initiated the request
+ requestedAt timestamp
+ acceptedAt timestamp
  createdAt timestamp
  updatedAt timestamp
 }
+// constraints:
+// - unique(userId, friendId)
+// - check(userId <> friendId)
+// mirrored-edge invariant:
+//   A->B pending  <=>  B->A incoming
+//   A->B connected <=> B->A connected
 
 chats [icon: message-circle, color: orange] {
  id uuid pk
