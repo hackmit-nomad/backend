@@ -1,20 +1,28 @@
-// Modified ER diagram based on original schema + updated OpenAPI needs
-// Changes are marked with [NEW] or [UPDATED]
+// Updated Supabase schema (adds MVP API support)
+// Notes:
+// - This is a modified version of the original ER diagram you provided.
+// - Auth tables are still handled by Supabase Auth; backend does NOT implement auth.
+// - New OpenAPI MVP requires additional profile fields, community membership,
+//   feed reactions, conversations mapping, calendar events, and notifications.
 
+//user profile, 作为 supabase auth 的补充
 profiles [icon: user, color: green] {
  id uuid pk
  email string
  displayName string
  avatarUrl string
- university string // [UPDATED]
- major string // [UPDATED]
- minor string // [UPDATED]
- year string // [UPDATED]
- bio string // [UPDATED]
- headline string // [UPDATED]
- interests json // [UPDATED] string[]
- isOnline boolean // [UPDATED]
- profileViews int // [UPDATED]
+ // --- added for OpenAPI MVP ---
+ university string
+ major string
+ minor string
+ year string
+ bio string
+ headline string
+ interests json        // or text[] if you prefer
+ courses json          // list of course ids (optional cache)
+ communities json      // list of community ids (optional cache)
+ profileViews int
+ isOnline boolean
  createdAt timestamp
  updatedAt timestamp
 }
@@ -31,6 +39,7 @@ user_privacy_settings [icon: lock, color: green] {
 
 profiles.id <> user_privacy_settings.userId
 
+//academic模块的数据库 (unchanged core)
 schools [icon: building, color: blue] {
  id uuid pk
  name string
@@ -89,13 +98,6 @@ courses [icon: layers, color: blue] {
  subjectCode string
  courseNumber string
  creditsDefault number
- description string // [UPDATED]
- department string // [UPDATED] optional denormalized subjectCode
- difficulty string // [UPDATED] Intro|Intermediate|Advanced|Graduate
- prerequisites json // [UPDATED] string[] cache for API
- nextCourses json // [UPDATED] string[] cache for API
- tags json // [UPDATED] string[]
- rating number // [UPDATED]
  createdAt timestamp
  updatedAt timestamp
 }
@@ -113,6 +115,11 @@ course_versions [icon: calendar, color: blue] {
  grading string
  rawText string
  sourceProgramVersionId uuid
+ // --- added for OpenAPI MVP ---
+ department string
+ difficulty string
+ tags json
+ rating number
  createdAt timestamp
  updatedAt timestamp
 }
@@ -222,7 +229,7 @@ user_courses [icon: check-square, color: blue] {
  userId uuid
  courseId uuid
  courseVersionId uuid
- status string
+ status string          // includes: planned, completed, dropped, etc.
  grade string
  termCode string
  source string
@@ -249,23 +256,6 @@ user_term_plan_sections [icon: list, color: blue] {
  createdAt timestamp
 }
 
-// [NEW] Dedicated calendar events required by /calendar/events APIs
-calendar_events [icon: calendar, color: blue] {
- id uuid pk
- userId uuid
- title string
- date date
- startTime string
- endTime string
- location string
- type string // class|study|social|deadline|custom
- color string
- createdAt timestamp
- updatedAt timestamp
-}
-
-profiles.id <> calendar_events.userId
-
 profiles.id <> processing_jobs.userId
 profiles.id <> user_programs.userId
 profiles.id <> user_courses.userId
@@ -274,33 +264,45 @@ profiles.id <> course_merge_candidates.decidedBy
 
 schools.id <> programs.schoolId
 programs.id <> program_versions.programId
+
 program_versions.id <> program_requirement_categories.programVersionId
 program_requirement_categories.parentId > program_requirement_categories.id
+
 schools.id <> courses.schoolId
 courses.id <> course_versions.courseId
 program_versions.id <> course_versions.sourceProgramVersionId
+
 program_requirement_categories.id <> program_course_requirements.categoryId
 program_versions.id <> program_course_requirements.programVersionId
 course_versions.id <> program_course_requirements.courseVersionId
+
 course_versions.id <> course_prerequisite_rules.courseVersionId
 course_versions.id <> course_prerequisite_edges.courseVersionId
 course_versions.id <> course_prerequisite_edges.prerequisiteCourseVersionId
+
 schools.id <> course_sections.schoolId
 course_versions.id <> course_sections.courseVersionId
 course_sections.id <> meeting_times.sectionId
+
 schools.id <> processing_jobs.schoolId
 program_versions.id <> processing_jobs.programVersionId
+
 schools.id <> course_merge_candidates.schoolId
 courses.id <> course_merge_candidates.leftCourseId
 courses.id <> course_merge_candidates.rightCourseId
+
 schools.id <> user_programs.schoolId
 programs.id <> user_programs.programId
 program_versions.id <> user_programs.programVersionId
+
 courses.id <> user_courses.courseId
 course_versions.id <> user_courses.courseVersionId
+
 user_term_plans.id <> user_term_plan_sections.planId
 course_sections.id <> user_term_plan_sections.sectionId
 
+
+//social 模块 (existing)
 nfc_tags [icon: smartphone, color: orange] {
  id uuid pk
  tagUid string
@@ -323,15 +325,15 @@ friendships [icon: user-plus, color: orange] {
  id uuid pk
  userId uuid
  friendId uuid
- status string // pending|accepted|blocked
+ status string     // none/pending/incoming/connected
  createdAt timestamp
  updatedAt timestamp
 }
 
 chats [icon: message-circle, color: orange] {
  id uuid pk
- type string // direct|group
- groupName string // [UPDATED]
+ type string       // direct/group
+ groupName string
  createdAt timestamp
 }
 
@@ -355,44 +357,49 @@ messages [icon: send, color: orange] {
 profiles.id <> nfc_tags.claimedByUserId
 nfc_tags.id <> nfc_scan_logs.tagId
 profiles.id <> nfc_scan_logs.scannedByUserId
+
 profiles.id <> friendships.userId
 profiles.id <> friendships.friendId
+
 chats.id <> chat_participants.chatId
 profiles.id <> chat_participants.userId
+
 chats.id <> messages.chatId
 profiles.id <> messages.senderId
 
+
+//community 模块 (extended for OpenAPI MVP)
 communities [icon: users, color: purple] {
  id uuid pk
  slug string
  name string
  introduction string
  icon string
- banner string // [UPDATED]
- color string // [UPDATED]
- tags json // [UPDATED] string[]
- university string // [UPDATED]
+ // --- added ---
+ description string
+ banner string
+ color string
+ tags json
+ university string
  createdAt timestamp
 }
 
-// [NEW] community membership for join/leave and joined filter
-community_memberships [icon: user-check, color: purple] {
- id uuid pk
- communityId uuid
- userId uuid
- role string
- createdAt timestamp
+// --- added: membership to support /communities/{id}/join ---
+community_members [icon: users, color: purple] {
+ communityId uuid pk
+ userId uuid pk
+ joinedAt timestamp
 }
 
 posts [icon: file-text, color: purple] {
  id uuid pk
  authorId uuid
  communityId uuid
- title string // [UPDATED]
  content string
  attachments json
- tags json // [UPDATED]
- likesCount int // [UPDATED]
+ // --- added for OpenAPI MVP feed fields ---
+ title string
+ tags json
  createdAt timestamp
  updatedAt timestamp
  deletedAt timestamp
@@ -404,48 +411,82 @@ comments [icon: message-square, color: purple] {
  authorId uuid
  parentCommentId uuid
  content string
- likesCount int // [UPDATED]
  createdAt timestamp
  updatedAt timestamp
  deletedAt timestamp
 }
 
-// [NEW] per-user reactions required for myReaction / isLiked
+// --- added: reactions for /posts/{postId}/reactions ---
 post_reactions [icon: heart, color: purple] {
+ postId uuid pk
+ userId uuid pk
+ reaction string
+ createdAt timestamp
+ updatedAt timestamp
+}
+
+post_votes [icon: heart, color: purple] {
  postId uuid
  userId uuid
- reaction string // like|celebrate|insightful|curious|support
+ value number
  createdAt timestamp
 }
 
-comment_reactions [icon: arrow-up-circle, color: purple] {
+comment_votes [icon: arrow-up-circle, color: purple] {
  commentId uuid
  userId uuid
  value number
  createdAt timestamp
 }
 
-// [NEW] notifications API backing table
-notifications [icon: bell, color: purple] {
- id uuid pk
- userId uuid
- type string // connection_request|endorsement|post_reaction|mention|profile_view
- fromId uuid
- content string
- read boolean
- createdAt timestamp
-}
-
 profiles.id <> posts.authorId
 communities.id <> posts.communityId
+
 posts.id <> comments.postId
 profiles.id <> comments.authorId
 comments.parentCommentId > comments.id
+
 posts.id <> post_reactions.postId
 profiles.id <> post_reactions.userId
-comments.id <> comment_reactions.commentId
-profiles.id <> comment_reactions.userId
-communities.id <> community_memberships.communityId
-profiles.id <> community_memberships.userId
+
+posts.id <> post_votes.postId
+profiles.id <> post_votes.userId
+
+comments.id <> comment_votes.commentId
+profiles.id <> comment_votes.userId
+
+communities.id <> community_members.communityId
+profiles.id <> community_members.userId
+
+
+// --- added: calendar + notifications for OpenAPI MVP ---
+calendar_events [icon: calendar, color: blue] {
+ id uuid pk
+ userId uuid
+ title string
+ date date
+ startTime string
+ endTime string
+ startAt timestamp
+ endAt timestamp
+ location string
+ type string
+ color string
+ createdAt timestamp
+ updatedAt timestamp
+}
+
+notifications [icon: bell, color: blue] {
+ id uuid pk
+ userId uuid
+ type string
+ fromId uuid
+ content string
+ read boolean
+ readAt timestamp
+ createdAt timestamp
+}
+
+profiles.id <> calendar_events.userId
 profiles.id <> notifications.userId
-profiles.id <> notifications.fromId
+
