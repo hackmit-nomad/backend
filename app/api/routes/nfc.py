@@ -22,6 +22,29 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _lookup_profile_id(candidate: str | None) -> str | None:
+    value = (candidate or "").strip()
+    if not value:
+        return None
+
+    # Different environments may expose profile/auth linkage with different columns.
+    for column in ("id", "userId", "authUserId", "auth_user_id"):
+        try:
+            rows = (
+                supabase.table("profiles")
+                .select("id")
+                .eq(column, value)
+                .limit(1)
+                .execute()
+                .data
+            ) or []
+        except APIError:
+            continue
+        if rows and rows[0].get("id"):
+            return str(rows[0]["id"])
+    return None
+
+
 def _connect_users_like_http(me_id: str, other_id: str) -> None:
     """Same behavior as POST /users/{userId}/connect when the tag owner is another user."""
     if other_id == me_id:
@@ -40,12 +63,14 @@ def _connect_users_like_http(me_id: str, other_id: str) -> None:
         _upsert_edge(other_id, me_id, "incoming")
 
 
-@router.post("/", response_model=NfcClaimResponse)
-def claim_or_link_nfc(uuid: str, uid_user: str = Depends(get_current_user_id)) -> NfcClaimResponse:
-    print("uuid",uuid)
-    tag_uid = uuid.strip()
+def _claim_or_link_nfc(tag_uid_raw: str, caller_profile_id: str) -> NfcClaimResponse:
+    tag_uid = tag_uid_raw.strip()
     if not tag_uid:
         raise HTTPException(status_code=400, detail="nfcUUID is required")
+
+    caller_id = _lookup_profile_id(caller_profile_id)
+    if not caller_id:
+        raise HTTPException(status_code=404, detail="Current user profile not found")
 
     try:
         rows = (
@@ -59,13 +84,16 @@ def claim_or_link_nfc(uuid: str, uid_user: str = Depends(get_current_user_id)) -
         rows = None
 
     row = rows[0] if rows else None
-    uid_db = str(row["claimedByUserId"]) if row and row.get("claimedByUserId") else None
+    owner_ref = str(row["claimedByUserId"]) if row and row.get("claimedByUserId") else None
+    owner_profile_id = _lookup_profile_id(owner_ref)
+    if owner_ref and not owner_profile_id:
+        raise HTTPException(status_code=409, detail="This NFC tag is linked to an unavailable profile.")
 
     # Not linked: no row, or row exists but nobody has claimed yet.
-    if not uid_db:
+    if not owner_profile_id:
         now = _now_iso()
         claim_payload = {
-            "claimedByUserId": uid_user,
+            "claimedByUserId": caller_id,
             "claimedAt": now,
             "status": "claimed",
         }
@@ -75,7 +103,7 @@ def claim_or_link_nfc(uuid: str, uid_user: str = Depends(get_current_user_id)) -
             else:
                 supabase.table("nfc_tags").insert(
                     {
-                        "id": str(uuid),
+                        "id": str(uuid.uuid4()),
                         "tagUid": tag_uid,
                         **claim_payload,
                         "createdAt": now,
@@ -86,11 +114,22 @@ def claim_or_link_nfc(uuid: str, uid_user: str = Depends(get_current_user_id)) -
         return NfcClaimResponse(exist=False)
 
     # Linked: uid_db is set.
-    if uid_db == uid_user:
+    if owner_profile_id == caller_id:
         raise HTTPException(
             status_code=409,
             detail="This NFC tag is already linked to your account.",
         )
 
-    _connect_users_like_http(uid_user, uid_db)
+    _connect_users_like_http(caller_id, owner_profile_id)
     return NfcClaimResponse(exist=True)
+
+
+@router.post("/{nfcUUID}", response_model=NfcClaimResponse)
+def claim_or_link_nfc_path(nfcUUID: str, uid_user: str = Depends(get_current_user_id)) -> NfcClaimResponse:
+    return _claim_or_link_nfc(nfcUUID, uid_user)
+
+
+@router.post("/", response_model=NfcClaimResponse)
+def claim_or_link_nfc_query(uuid: str, uid_user: str = Depends(get_current_user_id)) -> NfcClaimResponse:
+    # Backward-compatible query variant used by existing frontend integrations.
+    return _claim_or_link_nfc(uuid, uid_user)
