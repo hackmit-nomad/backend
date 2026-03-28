@@ -8,6 +8,7 @@ from pydantic import BaseModel
 
 from app.api.deps import get_current_user_id
 from app.db.supabase import supabase
+from app.services.pusher_events import publish_message_event
 
 router = APIRouter(prefix="/messages", tags=["Messages"])
 
@@ -209,6 +210,10 @@ class CreateMessageRequest(BaseModel):
     content: str
 
 
+class UpdateMessageRequest(BaseModel):
+    content: str
+
+
 @router.post("/conversations/{conversationId}/messages", status_code=201)
 def send_message(conversationId: str, body: CreateMessageRequest, user_id: str = Depends(get_current_user_id)) -> dict[str, Any]:
     _assert_is_participant(conversationId, user_id)
@@ -220,7 +225,56 @@ def send_message(conversationId: str, body: CreateMessageRequest, user_id: str =
     )
     if not resp.data:
         raise HTTPException(status_code=500, detail="Failed to send message")
-    return _msg_to_api(resp.data[0])
+    message = _msg_to_api(resp.data[0])
+    publish_message_event(
+        conversationId,
+        event_name="new-message",
+        payload={"chatId": conversationId, "message": message},
+    )
+    return message
+
+
+@router.patch("/conversations/{conversationId}/messages/{messageId}")
+def update_message(
+    conversationId: str,
+    messageId: str,
+    body: UpdateMessageRequest,
+    user_id: str = Depends(get_current_user_id),
+) -> dict[str, Any]:
+    _assert_is_participant(conversationId, user_id)
+    row = (
+        supabase.table("messages")
+        .select("*")
+        .eq("id", messageId)
+        .eq("chatId", conversationId)
+        .single()
+        .execute()
+        .data
+    )
+    if not row or row.get("deletedAt"):
+        raise HTTPException(status_code=404, detail="Message not found")
+    if row.get("senderId") != user_id:
+        raise HTTPException(status_code=403, detail="Only message sender can update this message")
+
+    updated_at = datetime.now(timezone.utc).isoformat()
+    updated = (
+        supabase.table("messages")
+        .update({"content": body.content, "updatedAt": updated_at})
+        .eq("id", messageId)
+        .eq("chatId", conversationId)
+        .execute()
+        .data
+    )
+    if not updated:
+        raise HTTPException(status_code=500, detail="Failed to update message")
+
+    message = _msg_to_api(updated[0])
+    publish_message_event(
+        conversationId,
+        event_name="upd-message",
+        payload={"chatId": conversationId, "message": message},
+    )
+    return message
 
 
 @router.delete("/conversations/{conversationId}/messages/{messageId}", status_code=204)
@@ -240,6 +294,11 @@ def delete_message(conversationId: str, messageId: str, user_id: str = Depends(g
     if row.get("senderId") != user_id:
         raise HTTPException(status_code=403, detail="Only message sender can delete this message")
     supabase.table("messages").update({"deletedAt": datetime.now(timezone.utc).isoformat()}).eq("id", messageId).execute()
+    publish_message_event(
+        conversationId,
+        event_name="del-message",
+        payload={"chatId": conversationId, "messageId": messageId},
+    )
     return None
 
 

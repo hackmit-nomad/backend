@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from typing import Literal
+import re
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
@@ -36,6 +37,57 @@ class PostReactionRequest(BaseModel):
     reaction: Reaction
 
 
+class CommentReactionResponse(BaseModel):
+    commentId: str
+    likes: int
+    isLiked: bool
+
+
+HASHTAG_PATTERN = re.compile(r"(^|[\s.,!?;:()\[\]{}])#([A-Za-z0-9][A-Za-z0-9_-]{0,31})")
+
+
+def _extract_hashtags(text: str | None) -> list[str]:
+    if not text:
+        return []
+    return [match.group(2) for match in HASHTAG_PATTERN.finditer(text)]
+
+
+def _merge_tags(*tag_groups: list[str] | None) -> list[str]:
+    merged: list[str] = []
+    seen: set[str] = set()
+    for group in tag_groups:
+        if not group:
+            continue
+        for raw in group:
+            tag = raw.strip().lstrip("#")
+            if not tag:
+                continue
+            key = tag.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(tag[:32])
+            if len(merged) >= 10:
+                return merged
+    return merged
+
+
+def _list_comment_reactions(comment_ids: list[str]) -> list[dict]:
+    if not comment_ids:
+        return []
+    try:
+        return (
+            supabase.table("comment_reactions")
+            .select("commentId,userId,reaction")
+            .in_("commentId", comment_ids)
+            .execute()
+            .data
+        ) or []
+    except Exception:
+        # Keep feed listing resilient even if comment reactions are not provisioned yet.
+        return []
+
+
 @router.get("/posts")
 def list_feed_posts(
     tab: str | None = Query(default="all"),
@@ -57,11 +109,12 @@ def list_feed_posts(
 @router.post("/posts", status_code=201)
 def create_post(body: CreatePostRequest, user_id: str = Depends(get_current_user_id)) -> dict:
     now = datetime.now(timezone.utc).isoformat()
+    tags = _merge_tags(body.tags, _extract_hashtags(body.content), _extract_hashtags(body.title))
     data = {
         "authorId": user_id,
         "title": body.title,
         "content": body.content,
-        "tags": body.tags or [],
+        "tags": tags,
         "createdAt": now,
         "updatedAt": now,
     }
@@ -76,6 +129,14 @@ def create_post(body: CreatePostRequest, user_id: str = Depends(get_current_user
 @router.patch("/posts/{postId}")
 def update_post(postId: str, body: UpdatePostRequest, user_id: str = Depends(get_current_user_id)) -> dict:
     payload = {k: v for k, v in body.model_dump().items() if v is not None}
+    if {"title", "content", "tags"} & payload.keys():
+        existing = supabase.table("posts").select("title,content,tags").eq("id", postId).single().execute().data
+        if not existing:
+            raise HTTPException(status_code=404, detail="Post not found")
+        title = payload.get("title", existing.get("title"))
+        content = payload.get("content", existing.get("content"))
+        provided_tags = payload.get("tags", existing.get("tags"))
+        payload["tags"] = _merge_tags(provided_tags, _extract_hashtags(content), _extract_hashtags(title))
     resp = supabase.table("posts").update(payload).eq("id", postId).eq("authorId", user_id).execute()
     if not resp.data:
         raise HTTPException(status_code=404, detail="Post not found")
@@ -97,11 +158,60 @@ def react_to_post(
     body: PostReactionRequest,
     user_id: str = Depends(get_current_user_id),
 ) -> dict:
-    supabase.table("post_reactions").upsert({"postId": postId, "userId": user_id, "reaction": body.reaction}).execute()
     post = supabase.table("posts").select("*").eq("id", postId).single().execute().data
     if not post:
         raise HTTPException(status_code=404, detail="Post not found")
+    existing_rows = (
+        supabase.table("post_reactions")
+        .select("id,reaction")
+        .eq("postId", postId)
+        .eq("userId", user_id)
+        .limit(1)
+        .execute()
+        .data
+    ) or []
+    existing = existing_rows[0] if existing_rows else None
+    if existing and existing.get("reaction") == body.reaction:
+        supabase.table("post_reactions").delete().eq("id", existing["id"]).execute()
+    elif existing:
+        supabase.table("post_reactions").update({"reaction": body.reaction}).eq("id", existing["id"]).execute()
+    else:
+        supabase.table("post_reactions").insert({"postId": postId, "userId": user_id, "reaction": body.reaction}).execute()
     return _post_to_api(post, user_id)
+
+
+@router.post("/comments/{commentId}/reactions")
+def react_to_comment(
+    commentId: str,
+    body: PostReactionRequest,
+    user_id: str = Depends(get_current_user_id),
+) -> CommentReactionResponse:
+    comment = supabase.table("comments").select("id").eq("id", commentId).is_("deletedAt", "null").single().execute().data
+    if not comment:
+        raise HTTPException(status_code=404, detail="Comment not found")
+    try:
+        existing_rows = (
+            supabase.table("comment_reactions")
+            .select("id,reaction")
+            .eq("commentId", commentId)
+            .eq("userId", user_id)
+            .limit(1)
+            .execute()
+            .data
+        ) or []
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Comment reactions are not available: {exc}") from exc
+    existing = existing_rows[0] if existing_rows else None
+    if existing and existing.get("reaction") == body.reaction:
+        supabase.table("comment_reactions").delete().eq("id", existing["id"]).execute()
+    elif existing:
+        supabase.table("comment_reactions").update({"reaction": body.reaction}).eq("id", existing["id"]).execute()
+    else:
+        supabase.table("comment_reactions").insert({"commentId": commentId, "userId": user_id, "reaction": body.reaction}).execute()
+    reactions = (supabase.table("comment_reactions").select("reaction,userId").eq("commentId", commentId).execute().data) or []
+    likes = sum(1 for r in reactions if r.get("reaction") == "like")
+    is_liked = any(r.get("userId") == user_id and r.get("reaction") == "like" for r in reactions)
+    return CommentReactionResponse(commentId=commentId, likes=likes, isLiked=is_liked)
 
 
 @router.post("/posts/{postId}/replies", status_code=201)
@@ -131,14 +241,14 @@ def reply_to_post(postId: str, body: CreateReplyRequest, user_id: str = Depends(
     return reply
 
 
-def _reply_to_api(r: dict, replies: list[dict] | None = None) -> dict:
+def _reply_to_api(r: dict, likes: int = 0, is_liked: bool = False, replies: list[dict] | None = None) -> dict:
     return {
         "id": r["id"],
         "authorId": r["authorId"],
         "content": r["content"],
         "timestamp": r.get("createdAt"),
-        "likes": 0,
-        "isLiked": False,
+        "likes": likes,
+        "isLiked": is_liked,
         "childReplies": replies or [],
     }
 
@@ -157,11 +267,25 @@ def _post_to_api(p: dict, user_id: str) -> dict:
         .data
     ) or []
 
-    print(comments_rows)
+    comment_ids = [r["id"] for r in comments_rows]
+    comment_reactions = _list_comment_reactions(comment_ids)
+    reactions_by_comment: dict[str, list[dict]] = {}
+    for reaction in comment_reactions or []:
+        cid = reaction.get("commentId")
+        if not cid:
+            continue
+        reactions_by_comment.setdefault(cid, []).append(reaction)
+
     comment_by_id: dict[str, dict] = {}
     replies: list[dict] = []
     for r in comments_rows:
-        comment_by_id[r["id"]] = _reply_to_api(r, replies=[])
+        row_reactions = reactions_by_comment.get(r["id"], [])
+        comment_likes = sum(1 for reaction in row_reactions if reaction.get("reaction") == "like")
+        comment_is_liked = any(
+            reaction.get("userId") == user_id and reaction.get("reaction") == "like"
+            for reaction in row_reactions
+        )
+        comment_by_id[r["id"]] = _reply_to_api(r, likes=comment_likes, is_liked=comment_is_liked, replies=[])
 
     for r in comments_rows:
         current = comment_by_id[r["id"]]
@@ -170,9 +294,6 @@ def _post_to_api(p: dict, user_id: str) -> dict:
             comment_by_id[parent_id]["childReplies"].append(current)
         else:
             replies.append(current)
-
-
-    print("REPLIES", replies)
 
     profile = p.get("profiles")
     if isinstance(profile, list):
