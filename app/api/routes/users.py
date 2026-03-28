@@ -103,6 +103,92 @@ def list_users(
     }
 
 
+@router.get("/users/friends")
+def list_friends(
+    user_id: str = Depends(get_current_user_id),
+) -> dict[str, Any]:
+    """Return the current user's connections grouped by status."""
+    rows = (
+        supabase.table("friendships")
+        .select("friendId,status")
+        .eq("userId", user_id)
+        .execute()
+    ).data or []
+
+    connected_ids: list[str] = []
+    pending_ids: list[str] = []
+    incoming_ids: list[str] = []
+
+    for row in rows:
+        fid = row.get("friendId")
+        status = row.get("status")
+        if not fid:
+            continue
+        if status == "connected":
+            connected_ids.append(fid)
+        elif status == "pending":
+            pending_ids.append(fid)
+        elif status == "incoming":
+            incoming_ids.append(fid)
+
+    def _load_profiles(ids: list[str]) -> list[dict[str, Any]]:
+        if not ids:
+            return []
+        resp = supabase.table("profiles").select("*").in_("id", ids).execute()
+        return resp.data or []
+
+    connected_profiles = _load_profiles(connected_ids)
+    pending_profiles = _load_profiles(pending_ids)
+    incoming_profiles = _load_profiles(incoming_ids)
+
+    return {
+        "connected": [_profile_to_user(p, "connected") for p in connected_profiles],
+        "pending": [_profile_to_user(p, "pending") for p in pending_profiles],
+        "incoming": [_profile_to_user(p, "incoming") for p in incoming_profiles],
+    }
+
+
+@router.get("/users/suggestions")
+def suggest_users(
+    limit: int = Query(default=10),
+    user_id: str = Depends(get_current_user_id),
+) -> dict[str, Any]:
+    """Return users the caller is not yet connected to, ranked by shared attributes."""
+    me_resp = supabase.table("profiles").select("*").eq("id", user_id).single().execute()
+    me_profile = me_resp.data or {}
+
+    # All friendship edges for this user (any status).
+    edges = (
+        supabase.table("friendships")
+        .select("friendId")
+        .eq("userId", user_id)
+        .execute()
+    ).data or []
+    excluded_ids = {user_id} | {e["friendId"] for e in edges if e.get("friendId")}
+
+    all_resp = supabase.table("profiles").select("*").execute()
+    candidates = [p for p in (all_resp.data or []) if p["id"] not in excluded_ids]
+
+    my_interests = set(me_profile.get("interests") or [])
+    my_courses = set(me_profile.get("courses") or [])
+    my_university = me_profile.get("university") or ""
+
+    def _score(p: dict[str, Any]) -> int:
+        s = 0
+        s += len(my_interests & set(p.get("interests") or []))
+        s += len(my_courses & set(p.get("courses") or []))
+        if p.get("university") == my_university and my_university:
+            s += 3
+        return s
+
+    candidates.sort(key=_score, reverse=True)
+    top = candidates[:limit]
+    return {
+        "items": [_profile_to_user(p, "none") for p in top],
+        "total": len(candidates),
+    }
+
+
 @router.get("/users/{userId}")
 def get_user_profile(userId: str, me_id: str = Depends(get_current_user_id)) -> dict[str, Any]:
     resp = supabase.table("profiles").select("*").eq("id", userId).single().execute()
@@ -119,9 +205,22 @@ def connect_user(userId: str, me_id: str = Depends(get_current_user_id)) -> dict
     if userId == me_id:
         raise HTTPException(status_code=400, detail="Cannot connect to self")
 
-    # UI currently models a single-step connect action.
-    _set_connected(me_id, userId)
-    return {"userId": userId, "status": "connected"}
+    # Check if other user already sent us a request — auto-accept.
+    reverse = (
+        supabase.table("friendships")
+        .select("*")
+        .eq("userId", me_id)
+        .eq("friendId", userId)
+        .execute()
+    ).data or []
+    if reverse and reverse[0].get("status") == "incoming":
+        _set_connected(me_id, userId)
+        return {"userId": userId, "status": "connected"}
+
+    # Otherwise create a pending outgoing / incoming pair.
+    _upsert_edge(me_id, userId, "pending")
+    _upsert_edge(userId, me_id, "incoming")
+    return {"userId": userId, "status": "pending"}
 
 
 @router.post("/users/{userId}/connect/accept")
