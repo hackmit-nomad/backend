@@ -28,6 +28,16 @@ class DemoProfile:
     avatar_url: str
 
 
+@dataclass(frozen=True)
+class DemoCommunity:
+    key: str
+    name: str
+    description: str
+    icon: str
+    color: str
+    tags: list[str]
+
+
 DEMO_PROFILES: list[DemoProfile] = [
     DemoProfile(
         key="alice",
@@ -65,6 +75,68 @@ DEMO_PROFILES: list[DemoProfile] = [
         bio="Builds hardware and full-stack side projects.",
         avatar_url="https://api.dicebear.com/7.x/avataaars/svg?seed=diego-demo",
     ),
+    DemoProfile(
+        key="emma",
+        display_name="Emma Zhou",
+        major="Computer Engineering",
+        year="Sophomore",
+        interests=["Compilers", "Embedded", "Security"],
+        bio="Enjoys low-level systems and teaching peers.",
+        avatar_url="https://api.dicebear.com/7.x/avataaars/svg?seed=emma-demo",
+    ),
+    DemoProfile(
+        key="farah",
+        display_name="Farah Noor",
+        major="Information Science",
+        year="Senior",
+        interests=["HCI", "Product", "Data Viz"],
+        bio="Turns user problems into pragmatic product ideas.",
+        avatar_url="https://api.dicebear.com/7.x/avataaars/svg?seed=farah-demo",
+    ),
+]
+
+
+DEMO_COMMUNITIES: list[DemoCommunity] = [
+    DemoCommunity(
+        key="graph-theory",
+        name="Graph Theory Guild",
+        description="Proofs, problem sets, and elegant graph constructions.",
+        icon="Network",
+        color="#4F46E5",
+        tags=["graphs", "math", "algorithms"],
+    ),
+    DemoCommunity(
+        key="ml-systems",
+        name="ML Systems Lab",
+        description="Model serving, feature pipelines, and practical ML infra.",
+        icon="Brain",
+        color="#0EA5E9",
+        tags=["ml", "systems", "infra"],
+    ),
+    DemoCommunity(
+        key="backend-builders",
+        name="Backend Builders",
+        description="APIs, databases, and architecture tradeoffs.",
+        icon="Server",
+        color="#10B981",
+        tags=["backend", "databases", "architecture"],
+    ),
+    DemoCommunity(
+        key="startup-studio",
+        name="Startup Studio",
+        description="Build, ship, and iterate on student startup ideas.",
+        icon="Rocket",
+        color="#F59E0B",
+        tags=["startups", "product", "growth"],
+    ),
+    DemoCommunity(
+        key="study-sprint",
+        name="Study Sprint",
+        description="Co-working accountability, focus sessions, and peer support.",
+        icon="BookOpen",
+        color="#EF4444",
+        tags=["study", "accountability", "community"],
+    ),
 ]
 
 
@@ -94,6 +166,17 @@ def _get_auth_user_id_by_email(email: str) -> str | None:
             if user_id:
                 return str(user_id)
     return None
+
+
+def _resolve_current_user_id(user_id: str | None, user_email: str | None) -> str | None:
+    if user_id:
+        return user_id
+    if not user_email:
+        return None
+    resolved = _get_auth_user_id_by_email(user_email)
+    if resolved:
+        return resolved
+    raise RuntimeError(f"Could not find auth user for email: {user_email}")
 
 
 def _ensure_auth_user(profile: DemoProfile) -> str:
@@ -205,7 +288,119 @@ def _upsert_user_course(user_id: str, course_version_id: str, status: str) -> No
         supabase.table("user_courses").insert(payload).execute()
 
 
-def _pick_demo_course_versions(limit: int = 4) -> list[str]:
+def _upsert_community(defn: DemoCommunity) -> str:
+    community_id = _stable_id(f"community:{defn.key}")
+    existing = (
+        supabase.table("communities")
+        .select("id")
+        .eq("id", community_id)
+        .limit(1)
+        .execute()
+        .data
+    ) or []
+    payload = {
+        "id": community_id,
+        "slug": defn.key,
+        "name": defn.name,
+        "introduction": defn.description,
+        "description": defn.description,
+        "icon": defn.icon,
+        "color": defn.color,
+        "tags": defn.tags,
+        "university": "Demo University",
+    }
+    if existing:
+        supabase.table("communities").update(payload).eq("id", community_id).execute()
+    else:
+        supabase.table("communities").insert(payload).execute()
+    return community_id
+
+
+def _upsert_community_member(community_id: str, user_id: str) -> None:
+    supabase.table("community_members").upsert({"communityId": community_id, "userId": user_id}).execute()
+
+
+def _upsert_post(
+    *,
+    post_id: str,
+    author_id: str,
+    community_id: str,
+    title: str,
+    content: str,
+    tags: list[str],
+) -> None:
+    existing = (
+        supabase.table("posts")
+        .select("id")
+        .eq("id", post_id)
+        .limit(1)
+        .execute()
+        .data
+    ) or []
+    now = _now_iso()
+    payload = {
+        "id": post_id,
+        "authorId": author_id,
+        "communityId": community_id,
+        "title": title,
+        "content": content,
+        "tags": tags,
+        "createdAt": now,
+        "updatedAt": now,
+    }
+    if existing:
+        supabase.table("posts").update(payload).eq("id", post_id).execute()
+    else:
+        supabase.table("posts").insert(payload).execute()
+
+
+def _upsert_comment(*, comment_id: str, post_id: str, author_id: str, content: str) -> None:
+    existing = (
+        supabase.table("comments")
+        .select("id")
+        .eq("id", comment_id)
+        .limit(1)
+        .execute()
+        .data
+    ) or []
+    now = _now_iso()
+    payload = {
+        "id": comment_id,
+        "postId": post_id,
+        "authorId": author_id,
+        "content": content,
+        "createdAt": now,
+        "updatedAt": now,
+    }
+    if existing:
+        supabase.table("comments").update(payload).eq("id", comment_id).execute()
+    else:
+        supabase.table("comments").insert(payload).execute()
+
+
+def _upsert_post_reaction(post_id: str, user_id: str, reaction: str = "like") -> None:
+    existing = (
+        supabase.table("post_reactions")
+        .select("postId,userId,reaction")
+        .eq("postId", post_id)
+        .eq("userId", user_id)
+        .limit(1)
+        .execute()
+        .data
+    ) or []
+    if existing:
+        (
+            supabase.table("post_reactions")
+            .update({"reaction": reaction})
+            .eq("postId", post_id)
+            .eq("userId", user_id)
+            .execute()
+        )
+    else:
+        supabase.table("post_reactions").insert({"postId": post_id, "userId": user_id, "reaction": reaction}).execute()
+
+
+def _pick_demo_course_versions(limit: int = 7) -> list[str]:
     rows = (
         supabase.table("course_versions")
         .select("id,code,title")
@@ -215,7 +410,7 @@ def _pick_demo_course_versions(limit: int = 4) -> list[str]:
         .data
     ) or []
     course_ids = [row["id"] for row in rows if row.get("id")]
-    if len(course_ids) < 3:
+    if len(course_ids) < 6:
         course_ids = _ensure_demo_courses()
         rows = (
             supabase.table("course_versions")
@@ -252,12 +447,16 @@ def _ensure_demo_courses() -> list[str]:
             ).execute()
 
     defs = [
-        ("DEMO-CG101", "Graph Foundations", "Intro", 0),
-        ("DEMO-CG201", "Network Algorithms", "Intermediate", 1),
-        ("DEMO-CG301", "Social Graph Systems", "Advanced", 2),
+        ("DEMO-CG101", "Graph Foundations", "Intro", 101),
+        ("DEMO-CG151", "Discrete Structures for Graphs", "Intro", 151),
+        ("DEMO-CG201", "Network Algorithms", "Intermediate", 201),
+        ("DEMO-CG251", "Scalable Data Pipelines", "Intermediate", 251),
+        ("DEMO-CG301", "Social Graph Systems", "Advanced", 301),
+        ("DEMO-CG351", "Graph ML in Production", "Advanced", 351),
+        ("DEMO-CG401", "Distributed Graph Infrastructure", "Graduate", 401),
     ]
     version_ids: list[str] = []
-    for code, title, difficulty, order in defs:
+    for code, title, difficulty, course_number in defs:
         course_id = _stable_id(f"course:{code}")
         version_id = _stable_id(f"course-version:{code}")
         version_ids.append(version_id)
@@ -273,7 +472,7 @@ def _ensure_demo_courses() -> list[str]:
                     "normalizedCode": code.lower(),
                     "normalizedName": title.lower(),
                     "subjectCode": "DEMO",
-                    "courseNumber": str(100 + (order * 100)),
+                    "courseNumber": str(course_number),
                     "creditsDefault": 3,
                 }
             ).execute()
@@ -286,7 +485,7 @@ def _ensure_demo_courses() -> list[str]:
             "courseId": course_id,
             "code": code,
             "title": title,
-            "description": f"{title} demo course for planner graph testing.",
+            "description": f"{title} demo course for planner and prerequisite graph testing.",
             "credits": 3,
             "department": "DEMO",
             "difficulty": difficulty,
@@ -297,10 +496,23 @@ def _ensure_demo_courses() -> list[str]:
         else:
             supabase.table("course_versions").insert(payload).execute()
 
-    # Prereqs: 201 requires 101, 301 requires 201.
+    # Linear prereq DAG for demos:
+    # 151 <- 101, 201 <- 151, 251 <- 201, 301 <- 251, 351 <- 301, 401 <- 351
+    edge_pairs = [
+        ("DEMO-CG151", "DEMO-CG101"),
+        ("DEMO-CG201", "DEMO-CG151"),
+        ("DEMO-CG251", "DEMO-CG201"),
+        ("DEMO-CG301", "DEMO-CG251"),
+        ("DEMO-CG351", "DEMO-CG301"),
+        ("DEMO-CG401", "DEMO-CG351"),
+    ]
     edges = [
-        (_stable_id("edge:201-101"), _stable_id("course-version:DEMO-CG201"), _stable_id("course-version:DEMO-CG101")),
-        (_stable_id("edge:301-201"), _stable_id("course-version:DEMO-CG301"), _stable_id("course-version:DEMO-CG201")),
+        (
+            _stable_id(f"edge:{course_code}-{prereq_code}"),
+            _stable_id(f"course-version:{course_code}"),
+            _stable_id(f"course-version:{prereq_code}"),
+        )
+        for course_code, prereq_code in edge_pairs
     ]
     for edge_id, course_version_id, prereq_id in edges:
         existing_edge = (
@@ -329,6 +541,10 @@ def clear_demo_data(current_user_id: str | None) -> None:
     ]
     participants = [*demo_ids, *( [current_user_id] if current_user_id else [] )]
 
+    seeded_community_ids = [_stable_id(f"community:{community.key}") for community in DEMO_COMMUNITIES]
+    seeded_post_ids = [_stable_id(f"post:{index}") for index in range(50)]
+    seeded_comment_ids = [_stable_id(f"comment:{index}") for index in range(20)]
+
     if participants:
         (
             supabase.table("friendships")
@@ -339,22 +555,132 @@ def clear_demo_data(current_user_id: str | None) -> None:
         )
         supabase.table("user_courses").delete().in_("userId", participants).eq("source", "demo_seed").execute()
 
+    if seeded_post_ids:
+        (
+            supabase.table("post_reactions")
+            .delete()
+            .in_("postId", seeded_post_ids)
+            .execute()
+        )
+        supabase.table("comments").delete().in_("id", seeded_comment_ids).execute()
+        supabase.table("posts").delete().in_("id", seeded_post_ids).execute()
+    if seeded_community_ids:
+        supabase.table("community_members").delete().in_("communityId", seeded_community_ids).execute()
+        supabase.table("communities").delete().in_("id", seeded_community_ids).execute()
+
     supabase.table("profiles").delete().in_("id", demo_ids).execute()
-    print(f"Cleared demo profiles={len(demo_ids)} and related seeded edges/courses.")
+    print(
+        f"Cleared demo profiles={len(demo_ids)}, communities={len(seeded_community_ids)}, "
+        f"posts={len(seeded_post_ids)}, and related seeded edges/courses."
+    )
+
+
+def _seed_demo_communities_and_posts(user_ids: list[str]) -> None:
+    if not user_ids:
+        return
+
+    community_ids = [_upsert_community(community) for community in DEMO_COMMUNITIES]
+    for index, user_id in enumerate(user_ids):
+        # Each user joins multiple communities to enrich feed and member discovery.
+        for offset in range(3):
+            community_id = community_ids[(index + offset) % len(community_ids)]
+            _upsert_community_member(community_id, user_id)
+
+    topics = [
+        "study strategy",
+        "project update",
+        "exam prep",
+        "networking tip",
+        "course review",
+        "hackathon planning",
+        "internship prep",
+        "design feedback",
+        "database optimization",
+        "graph modeling",
+    ]
+    hashtags = [
+        "algorithms",
+        "systems",
+        "ml",
+        "product",
+        "career",
+        "backend",
+        "startups",
+        "study",
+        "research",
+        "networking",
+    ]
+    calls_to_action = [
+        "Anyone want to pair on this?",
+        "Would love feedback from folks who tried this.",
+        "Drop your approach below.",
+        "Sharing notes in case this helps someone.",
+        "Curious what worked for others.",
+    ]
+
+    for index in range(50):
+        post_id = _stable_id(f"post:{index}")
+        author_id = user_ids[index % len(user_ids)]
+        community_id = community_ids[index % len(community_ids)]
+        topic = topics[index % len(topics)]
+        tag1 = hashtags[index % len(hashtags)]
+        tag2 = hashtags[(index + 3) % len(hashtags)]
+        title = f"Demo Post #{index + 1}: {topic.title()}"
+        content = (
+            f"Week {index % 8 + 1} update on {topic}. "
+            f"Key takeaway: break large goals into focused sprints and review outcomes weekly. "
+            f"{calls_to_action[index % len(calls_to_action)]} "
+            f"#{tag1} #{tag2}"
+        )
+        _upsert_post(
+            post_id=post_id,
+            author_id=author_id,
+            community_id=community_id,
+            title=title,
+            content=content,
+            tags=["demo_seed", tag1, tag2, topic.replace(" ", "-")],
+        )
+
+        # Add realistic engagement: first 20 posts get one seeded comment.
+        if index < 20:
+            comment_id = _stable_id(f"comment:{index}")
+            commenter = user_ids[(index + 1) % len(user_ids)]
+            _upsert_comment(
+                comment_id=comment_id,
+                post_id=post_id,
+                author_id=commenter,
+                content=f"Helpful point on {topic}. I tested a similar workflow and it improved consistency.",
+            )
+
+        # Seed likes on a subset for "top" feed demos.
+        if index % 2 == 0:
+            liker_a = user_ids[(index + 2) % len(user_ids)]
+            _upsert_post_reaction(post_id, liker_a, "like")
+        if index % 3 == 0:
+            liker_b = user_ids[(index + 3) % len(user_ids)]
+            _upsert_post_reaction(post_id, liker_b, "like")
 
 
 def seed_demo_data(current_user_id: str | None) -> None:
     demo_ids = {profile.key: _ensure_profile(profile) for profile in DEMO_PROFILES}
-    course_ids = _pick_demo_course_versions(limit=5)
+    course_ids = _ensure_demo_courses()
 
     alice = demo_ids["alice"]
     brandon = demo_ids["brandon"]
     chloe = demo_ids["chloe"]
     diego = demo_ids["diego"]
+    emma = demo_ids["emma"]
+    farah = demo_ids["farah"]
 
-    # Connected graph among demo users:
-    # Alice <-> Brandon <-> Chloe and Brandon <-> Diego
-    connected_pairs = [(alice, brandon), (brandon, chloe), (brandon, diego)]
+    # Connected graph among demo users for richer mutuals and graph density.
+    connected_pairs = [
+        (alice, brandon),
+        (brandon, chloe),
+        (brandon, diego),
+        (chloe, emma),
+        (emma, farah),
+        (diego, farah),
+    ]
     for a, b in connected_pairs:
         _upsert_friend_edge(a, b, "connected")
         _upsert_friend_edge(b, a, "connected")
@@ -372,19 +698,39 @@ def seed_demo_data(current_user_id: str | None) -> None:
     second = course_ids[1] if len(course_ids) > 1 else base
     third = course_ids[2] if len(course_ids) > 2 else second
     fourth = course_ids[3] if len(course_ids) > 3 else third
+    fifth = course_ids[4] if len(course_ids) > 4 else fourth
+    sixth = course_ids[5] if len(course_ids) > 5 else fifth
+    seventh = course_ids[6] if len(course_ids) > 6 else sixth
 
     _upsert_user_course(alice, base, "planned")
     _upsert_user_course(alice, second, "planned")
+    _upsert_user_course(alice, third, "planned")
     _upsert_user_course(brandon, base, "planned")
     _upsert_user_course(brandon, third, "planned")
+    _upsert_user_course(brandon, fourth, "planned")
     _upsert_user_course(chloe, base, "planned")
     _upsert_user_course(chloe, fourth, "planned")
+    _upsert_user_course(chloe, fifth, "planned")
     _upsert_user_course(diego, second, "planned")
     _upsert_user_course(diego, third, "planned")
+    _upsert_user_course(diego, sixth, "planned")
+    _upsert_user_course(emma, third, "planned")
+    _upsert_user_course(emma, fifth, "planned")
+    _upsert_user_course(emma, sixth, "planned")
+    _upsert_user_course(farah, fourth, "planned")
+    _upsert_user_course(farah, sixth, "planned")
+    _upsert_user_course(farah, seventh, "planned")
 
     if current_user_id:
         _upsert_user_course(current_user_id, base, "planned")
         _upsert_user_course(current_user_id, second, "planned")
+        _upsert_user_course(current_user_id, third, "planned")
+        _upsert_user_course(current_user_id, fourth, "planned")
+
+    audience = [alice, brandon, chloe, diego, emma, farah]
+    if current_user_id and current_user_id not in audience:
+        audience.append(current_user_id)
+    _seed_demo_communities_and_posts(audience)
 
     print("Seed complete.")
     print(f"Demo profile IDs: {demo_ids}")
@@ -402,17 +748,25 @@ def main() -> None:
         help="Optional current user id to connect to demo users and enroll in demo courses.",
     )
     parser.add_argument(
+        "--user-email",
+        dest="user_email",
+        default=None,
+        help="Optional current user email; resolves auth user id automatically for demo linking.",
+    )
+    parser.add_argument(
         "--clear",
         action="store_true",
         help="Clear previously seeded demo data instead of seeding.",
     )
     args = parser.parse_args()
 
+    current_user_id = _resolve_current_user_id(args.user_id, args.user_email)
+
     if args.clear:
-        clear_demo_data(args.user_id)
+        clear_demo_data(current_user_id)
         return
 
-    seed_demo_data(args.user_id)
+    seed_demo_data(current_user_id)
 
 
 if __name__ == "__main__":

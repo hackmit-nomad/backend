@@ -43,7 +43,18 @@ def list_courses(
         query = query.eq("difficulty", difficulty)
     resp = query.execute()
     items = resp.data or []
-    return {"items": [_cv_to_course(c) for c in items], "total": len(items)}
+    course_ids = [item["id"] for item in items if item.get("id")]
+    prerequisites_by_course, next_courses_by_course = _course_graph_maps(course_ids)
+
+    projected = []
+    for course_version in items:
+        course = _cv_to_course(course_version)
+        cid = course["id"]
+        course["prerequisites"] = prerequisites_by_course.get(cid, [])
+        course["nextCourses"] = next_courses_by_course.get(cid, [])
+        projected.append(course)
+
+    return {"items": projected, "total": len(items)}
 
 
 @router.post("", status_code=201)
@@ -237,6 +248,43 @@ def _course_connections(course_id: str, user_id: str) -> tuple[list[dict[str, An
     known = [_profile_to_user(p) for p in classmates if p["id"] in connected_ids]
     suggested = [_profile_to_user(p) for p in classmates if p["id"] not in connected_ids]
     return known, suggested
+
+
+def _course_graph_maps(course_ids: list[str]) -> tuple[dict[str, list[str]], dict[str, list[str]]]:
+    prerequisites_by_course: dict[str, list[str]] = {cid: [] for cid in course_ids}
+    next_courses_by_course: dict[str, list[str]] = {cid: [] for cid in course_ids}
+    if not course_ids:
+        return prerequisites_by_course, next_courses_by_course
+
+    prereq_edges = (
+        supabase.table("course_prerequisite_edges")
+        .select("courseVersionId,prerequisiteCourseVersionId")
+        .in_("courseVersionId", course_ids)
+        .execute()
+    ).data or []
+    for edge in prereq_edges:
+        course_id = edge.get("courseVersionId")
+        prereq_id = edge.get("prerequisiteCourseVersionId")
+        if not course_id or not prereq_id:
+            continue
+        if course_id in prerequisites_by_course:
+            prerequisites_by_course[course_id].append(prereq_id)
+
+    next_edges = (
+        supabase.table("course_prerequisite_edges")
+        .select("courseVersionId,prerequisiteCourseVersionId")
+        .in_("prerequisiteCourseVersionId", course_ids)
+        .execute()
+    ).data or []
+    for edge in next_edges:
+        course_id = edge.get("courseVersionId")
+        prereq_id = edge.get("prerequisiteCourseVersionId")
+        if not course_id or not prereq_id:
+            continue
+        if prereq_id in next_courses_by_course:
+            next_courses_by_course[prereq_id].append(course_id)
+
+    return prerequisites_by_course, next_courses_by_course
 
 
 def _classmates_for_course(course_id: str, user_id: str) -> list[dict[str, Any]]:
