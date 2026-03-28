@@ -172,7 +172,6 @@ class CourseVersionIngest(BaseModel):
     department: str | None = None
     difficulty: str | None = None
     tags: list[str] | None = None
-    rating: float | None = None
 
 
 class PrerequisiteRule(BaseModel):

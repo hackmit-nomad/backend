@@ -24,6 +24,7 @@ class UpdateUserRequest(BaseModel):
     interests: list[str] | None = None
     tags: list[str] | None = None
     university: str | None = None
+    avatar: str | None = None
 
 
 @router.get("/me")
@@ -55,6 +56,8 @@ def update_me(body: UpdateUserRequest, user_id: str = Depends(get_current_user_i
         payload["interests"] = body.interests
     if body.tags is not None:
         payload["tags"] = body.tags
+    if body.avatar is not None:
+        payload["avatarUrl"] = body.avatar
 
     if not payload:
         current = supabase.table("profiles").select("*").eq("id", user_id).single().execute().data

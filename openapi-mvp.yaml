@@ -850,7 +850,6 @@ components:
         tags:
           type: array
           items: { type: string }
-        rating: { type: number, format: float }
         students:
           type: array
           items: { type: string }

@@ -770,7 +770,6 @@ components:
         students:
           type: array
           items: { type: string }
-        rating: { type: number, format: float }
     CreateCourseRequest:
       type: object
       properties:

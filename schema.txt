@@ -119,7 +119,6 @@ course_versions [icon: calendar, color: blue] {
  department string
  difficulty string
  tags json
- rating number
  createdAt timestamp
  updatedAt timestamp
 }

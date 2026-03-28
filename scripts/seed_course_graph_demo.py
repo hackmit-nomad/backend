@@ -291,7 +291,6 @@ def _ensure_demo_courses() -> list[str]:
             "department": "DEMO",
             "difficulty": difficulty,
             "tags": ["demo", "graph"],
-            "rating": 4.7 - (order * 0.1),
         }
         if existing_version:
             supabase.table("course_versions").update(payload).eq("id", version_id).execute()

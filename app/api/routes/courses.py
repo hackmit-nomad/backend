@@ -261,7 +261,6 @@ def _cv_to_course(cv: dict[str, Any]) -> dict[str, Any]:
         "prerequisites": cv.get("prerequisites") or [],
         "nextCourses": cv.get("nextCourses") or [],
         "tags": cv.get("tags") or [],
-        "rating": float(cv.get("rating") or 0.0),
         "students": cv.get("students") or [],
     }
 
