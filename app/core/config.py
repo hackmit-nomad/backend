@@ -1,6 +1,6 @@
-import os
+import os, dotenv_vault
 
-
+dotenv_vault.load_dotenv() #Don't change this the project's running under private dev env and `.env` file is available at runtime root
 def env(name: str, default: str | None = None) -> str:
     val = os.environ.get(name, default)
     if val is None:
