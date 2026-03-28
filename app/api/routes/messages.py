@@ -339,7 +339,8 @@ async def create_schedule_proposals(
     _assert_is_participant(conversationId, user_id)
     if not CHAT_WORKFLOW_API_KEY:
         raise HTTPException(status_code=503, detail="CHAT_SCHEDULER_KEY not configured")
-    _ensure_nomad_agent_profile()
+    can_post_nomad_messages = _ensure_nomad_agent_profile()
+    scheduler_sender_id = NOMAD_AGENT_ID if can_post_nomad_messages else user_id
 
     participants = (
         supabase.table("chat_participants")
@@ -401,18 +402,20 @@ async def create_schedule_proposals(
             user_id=user_id,
         )
     except HTTPException as exc:
-        _post_nomad_message(
+        _post_scheduler_message(
             conversationId,
             f"I could not generate schedule proposals right now.\nReason: {exc.detail}",
+            sender_id=scheduler_sender_id,
         )
         raise
 
     generated_events = _extract_generated_events(raw_answer)
     if not generated_events:
-        _post_nomad_message(
+        _post_scheduler_message(
             conversationId,
             "I reviewed the conversation and agenda, but could not infer a valid proposal yet. "
             "Try adding specific time constraints in chat.",
+            sender_id=scheduler_sender_id,
         )
         return {"items": [], "total": 0}
 
@@ -456,7 +459,11 @@ async def create_schedule_proposals(
             f"- {event.get('title') or 'Proposed Event'} on {event.get('date')} "
             f"{event.get('startTime')}-{event.get('endTime')}"
         )
-    _post_nomad_message(conversationId, "\n".join(summary_lines))
+    _post_scheduler_message(
+        conversationId,
+        "\n".join(summary_lines),
+        sender_id=scheduler_sender_id,
+    )
 
     return {"items": generated_events, "total": len(generated_events), "participants": len(participant_ids), "createdForMe": created_for_user}
 
@@ -483,7 +490,7 @@ def _msg_to_api(m: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _ensure_nomad_agent_profile() -> None:
+def _ensure_nomad_agent_profile() -> bool:
     existing = (
         supabase.table("profiles")
         .select("id")
@@ -493,7 +500,7 @@ def _ensure_nomad_agent_profile() -> None:
         .data
     ) or []
     if existing:
-        return
+        return True
 
     payload = {
         "id": NOMAD_AGENT_ID,
@@ -505,20 +512,32 @@ def _ensure_nomad_agent_profile() -> None:
     }
     try:
         supabase.table("profiles").upsert(payload).execute()
+        return True
     except Exception:
-        # Minimal fallback for stricter schemas.
-        supabase.table("profiles").upsert({"id": NOMAD_AGENT_ID, "displayName": "Nomad"}).execute()
+        try:
+            # Minimal fallback for stricter schemas.
+            supabase.table("profiles").upsert({"id": NOMAD_AGENT_ID, "displayName": "Nomad"}).execute()
+            return True
+        except Exception as fallback_exc:
+            # Some deployments enforce profiles.id -> users.id. If the synthetic user
+            # cannot be created here, keep scheduler functional and skip bot messages.
+            _debug_log(
+                "chat_scheduler: unable to ensure Nomad profile; "
+                f"skipping bot chat messages ({fallback_exc.__class__.__name__}: {str(fallback_exc)[:220]})"
+            )
+            return False
 
 
-def _post_nomad_message(conversation_id: str, content: str) -> None:
+def _post_scheduler_message(conversation_id: str, content: str, *, sender_id: str) -> None:
+    rendered_content = content if sender_id == NOMAD_AGENT_ID else f"[Nomad Scheduler]\n{content}"
     now = datetime.now(timezone.utc).isoformat()
     resp = (
         supabase.table("messages")
         .insert(
             {
                 "chatId": conversation_id,
-                "senderId": NOMAD_AGENT_ID,
-                "content": content,
+                "senderId": sender_id,
+                "content": rendered_content,
                 "createdAt": now,
                 "updatedAt": now,
             }
