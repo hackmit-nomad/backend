@@ -8,6 +8,7 @@ import re
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
+from postgrest.exceptions import APIError
 
 from app.api.deps import get_current_user_id
 from app.db.supabase import supabase
@@ -143,14 +144,28 @@ def list_feed_posts(
         query = query.eq("communityId", communityId)
     posts = (query.order("createdAt", desc=True).execute().data) or []
 
-    user_profile = (
-        supabase.table("profiles")
-        .select("interests,tags")
-        .eq("id", user_id)
-        .limit(1)
-        .execute()
-        .data
-    ) or []
+    try:
+        user_profile = (
+            supabase.table("profiles")
+            .select("interests,tags")
+            .eq("id", user_id)
+            .limit(1)
+            .execute()
+            .data
+        ) or []
+    except APIError as exc:
+        # Backward-compatible path for databases that don't have profiles.tags yet.
+        if "tags" in str(exc):
+            user_profile = (
+                supabase.table("profiles")
+                .select("interests")
+                .eq("id", user_id)
+                .limit(1)
+                .execute()
+                .data
+            ) or []
+        else:
+            raise
     profile = user_profile[0] if user_profile else {}
     profile_tokens = _normalize_tokens((profile.get("interests") or []) + (profile.get("tags") or []))
     interest_tokens = _parse_csv_tokens(interests)
