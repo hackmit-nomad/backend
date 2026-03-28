@@ -40,9 +40,9 @@ def _connect_users_like_http(me_id: str, other_id: str) -> None:
         _upsert_edge(other_id, me_id, "incoming")
 
 
-@router.post("/{nfcUUID}", response_model=NfcClaimResponse)
-def claim_or_link_nfc(nfcUUID: str, uid_user: str = Depends(get_current_user_id)) -> NfcClaimResponse:
-    tag_uid = nfcUUID.strip()
+@router.post("/", response_model=NfcClaimResponse)
+def claim_or_link_nfc(uuid: str, uid_user: str = Depends(get_current_user_id)) -> NfcClaimResponse:
+    tag_uid = uuid.strip()
     if not tag_uid:
         raise HTTPException(status_code=400, detail="nfcUUID is required")
 
