@@ -6,6 +6,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
+from postgrest.exceptions import APIError
 
 from app.api.deps import get_current_user_id
 from app.db.supabase import supabase
@@ -55,7 +56,27 @@ def update_me(body: UpdateUserRequest, user_id: str = Depends(get_current_user_i
     if body.tags is not None:
         payload["tags"] = body.tags
 
-    resp = supabase.table("profiles").update(payload).eq("id", user_id).execute()
+    if not payload:
+        current = supabase.table("profiles").select("*").eq("id", user_id).single().execute().data
+        if not current:
+            raise HTTPException(status_code=404, detail="User not found")
+        return _profile_to_user(current, "none")
+
+    try:
+        resp = supabase.table("profiles").update(payload).eq("id", user_id).execute()
+    except APIError as exc:
+        # Backward-compatible path for databases that don't have profiles.tags yet.
+        if "tags" in payload and "tags" in str(exc):
+            fallback_payload = {k: v for k, v in payload.items() if k != "tags"}
+            if not fallback_payload:
+                current = supabase.table("profiles").select("*").eq("id", user_id).single().execute().data
+                if not current:
+                    raise HTTPException(status_code=404, detail="User not found")
+                return _profile_to_user(current, "none")
+            resp = supabase.table("profiles").update(fallback_payload).eq("id", user_id).execute()
+        else:
+            raise
+
     if not resp.data:
         raise HTTPException(status_code=404, detail="User not found")
     return _profile_to_user(resp.data[0], "none")
