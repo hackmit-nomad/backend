@@ -8,4 +8,5 @@ dependencies = [
     "fastapi>=0.135.2",
     "supabase>=2.28.3",
     "uvicorn",
+    "python-dotenv-vault",
 ]
