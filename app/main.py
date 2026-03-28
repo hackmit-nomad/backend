@@ -29,7 +29,7 @@ def create_app() -> FastAPI:
 
     @app.get("/")
     async def root():
-        return {"message": "nomad v1.0.0 mvp"}
+        return {"message": "nomad v3.1.0 mvp"}
 
     app.include_router(api_router)
     return app
