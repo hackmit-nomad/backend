@@ -10,6 +10,7 @@ from app.api.routes import (
     notifications,
     onboarding,
     planner,
+    resume,
     search,
     users,
 )
@@ -26,5 +27,6 @@ api_router.include_router(calendar.router)
 api_router.include_router(notifications.router)
 api_router.include_router(onboarding.router)
 api_router.include_router(planner.router)
+api_router.include_router(resume.router)
 api_router.include_router(search.router)
 

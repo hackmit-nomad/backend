@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import math
+from collections import Counter
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -19,6 +21,7 @@ class UpdateUserRequest(BaseModel):
     minor: str | None = None
     year: str | None = None
     interests: list[str] | None = None
+    tags: list[str] | None = None
     university: str | None = None
 
 
@@ -49,6 +52,8 @@ def update_me(body: UpdateUserRequest, user_id: str = Depends(get_current_user_i
         payload["university"] = body.university
     if body.interests is not None:
         payload["interests"] = body.interests
+    if body.tags is not None:
+        payload["tags"] = body.tags
 
     resp = supabase.table("profiles").update(payload).eq("id", user_id).execute()
     if not resp.data:
@@ -148,12 +153,63 @@ def list_friends(
     }
 
 
+def _build_feature_vector(profile: dict[str, Any], vocabulary: dict[str, int], idf: dict[str, float]) -> list[float]:
+    """Build a TF-IDF weighted feature vector for a user profile.
+
+    Features are derived from tags (weight 2x), interests (weight 1.5x),
+    courses, and university — giving higher importance to skill-based matching.
+    """
+    vec = [0.0] * len(vocabulary)
+
+    # Tags get highest weight (skill-based matching is most relevant)
+    for tag in (profile.get("tags") or []):
+        t = f"tag:{tag.lower().strip()}"
+        if t in vocabulary:
+            vec[vocabulary[t]] = 2.0 * idf.get(t, 1.0)
+
+    # Interests get strong weight
+    for interest in (profile.get("interests") or []):
+        t = f"interest:{interest.lower().strip()}"
+        if t in vocabulary:
+            vec[vocabulary[t]] = 1.5 * idf.get(t, 1.0)
+
+    # Courses
+    for course in (profile.get("courses") or []):
+        t = f"course:{course}"
+        if t in vocabulary:
+            vec[vocabulary[t]] = 1.0 * idf.get(t, 1.0)
+
+    # University
+    uni = (profile.get("university") or "").strip()
+    if uni:
+        t = f"uni:{uni.lower()}"
+        if t in vocabulary:
+            vec[vocabulary[t]] = 1.0 * idf.get(t, 1.0)
+
+    return vec
+
+
+def _cosine_similarity(a: list[float], b: list[float]) -> float:
+    """Compute cosine similarity between two vectors."""
+    dot = sum(x * y for x, y in zip(a, b))
+    norm_a = math.sqrt(sum(x * x for x in a))
+    norm_b = math.sqrt(sum(x * x for x in b))
+    if norm_a == 0 or norm_b == 0:
+        return 0.0
+    return dot / (norm_a * norm_b)
+
+
 @router.get("/users/suggestions")
 def suggest_users(
     limit: int = Query(default=10),
     user_id: str = Depends(get_current_user_id),
 ) -> dict[str, Any]:
-    """Return users the caller is not yet connected to, ranked by shared attributes."""
+    """Return users ranked by cosine similarity across tags, interests, courses, and university.
+
+    Uses TF-IDF weighted feature vectors with cosine similarity for matching.
+    Tags and interests are weighted higher than courses/university to prioritize
+    skill and personality alignment.
+    """
     me_resp = supabase.table("profiles").select("*").eq("id", user_id).single().execute()
     me_profile = me_resp.data or {}
 
@@ -167,24 +223,59 @@ def suggest_users(
     excluded_ids = {user_id} | {e["friendId"] for e in edges if e.get("friendId")}
 
     all_resp = supabase.table("profiles").select("*").execute()
-    candidates = [p for p in (all_resp.data or []) if p["id"] not in excluded_ids]
+    all_profiles = all_resp.data or []
+    candidates = [p for p in all_profiles if p["id"] not in excluded_ids]
 
-    my_interests = set(me_profile.get("interests") or [])
-    my_courses = set(me_profile.get("courses") or [])
-    my_university = me_profile.get("university") or ""
+    if not candidates:
+        return {"items": [], "total": 0}
 
-    def _score(p: dict[str, Any]) -> int:
-        s = 0
-        s += len(my_interests & set(p.get("interests") or []))
-        s += len(my_courses & set(p.get("courses") or []))
-        if p.get("university") == my_university and my_university:
-            s += 3
-        return s
+    # Build vocabulary from ALL profiles (including self) for proper IDF calculation
+    doc_freq: Counter[str] = Counter()
+    n_docs = len(all_profiles)
 
-    candidates.sort(key=_score, reverse=True)
-    top = candidates[:limit]
+    for p in all_profiles:
+        terms_in_doc: set[str] = set()
+        for tag in (p.get("tags") or []):
+            terms_in_doc.add(f"tag:{tag.lower().strip()}")
+        for interest in (p.get("interests") or []):
+            terms_in_doc.add(f"interest:{interest.lower().strip()}")
+        for course in (p.get("courses") or []):
+            terms_in_doc.add(f"course:{course}")
+        uni = (p.get("university") or "").strip()
+        if uni:
+            terms_in_doc.add(f"uni:{uni.lower()}")
+        for term in terms_in_doc:
+            doc_freq[term] += 1
+
+    # Build vocabulary index and IDF weights
+    vocabulary: dict[str, int] = {term: i for i, term in enumerate(sorted(doc_freq.keys()))}
+    idf: dict[str, float] = {
+        term: math.log((1 + n_docs) / (1 + freq)) + 1
+        for term, freq in doc_freq.items()
+    }
+
+    # Build feature vector for current user
+    my_vec = _build_feature_vector(me_profile, vocabulary, idf)
+
+    # Score each candidate by cosine similarity
+    scored: list[tuple[float, dict[str, Any]]] = []
+    for p in candidates:
+        cand_vec = _build_feature_vector(p, vocabulary, idf)
+        sim = _cosine_similarity(my_vec, cand_vec)
+        scored.append((sim, p))
+
+    # Sort by similarity descending
+    scored.sort(key=lambda x: x[0], reverse=True)
+    top = scored[:limit]
+
+    items = []
+    for sim_score, p in top:
+        user = _profile_to_user(p, "none")
+        user["similarityScore"] = round(sim_score, 4)
+        items.append(user)
+
     return {
-        "items": [_profile_to_user(p, "none") for p in top],
+        "items": items,
         "total": len(candidates),
     }
 
@@ -313,6 +404,7 @@ def _profile_to_user(p: dict[str, Any], connection_status: str = "none") -> dict
         "bio": p.get("bio") or "",
         "headline": p.get("headline"),
         "interests": p.get("interests") or [],
+        "tags": p.get("tags") or [],
         "courses": p.get("courses") or [],
         "communities": p.get("communities") or [],
         "isConnected": connection_status == "connected",

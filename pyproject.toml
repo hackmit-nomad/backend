@@ -10,4 +10,8 @@ dependencies = [
     "uvicorn",
     "python-dotenv-vault",
     "pusher>=3.3.4",
+    "httpx",
+    "python-multipart",
+    "PyPDF2",
+    "python-docx",
 ]
