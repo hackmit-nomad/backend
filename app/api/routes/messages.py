@@ -229,7 +229,12 @@ def send_message(conversationId: str, body: CreateMessageRequest, user_id: str =
     publish_message_event(
         conversationId,
         event_name="new-message",
-        payload={"chatId": conversationId, "message": message},
+        payload={
+            "id": message["id"],
+            "content": message["content"],
+            "senderId": message["senderId"],
+            "timestamp": message["timestamp"],
+        },
     )
     return message
 
@@ -272,7 +277,12 @@ def update_message(
     publish_message_event(
         conversationId,
         event_name="upd-message",
-        payload={"chatId": conversationId, "message": message},
+        payload={
+            "id": message["id"],
+            "content": message["content"],
+            "senderId": message["senderId"],
+            "timestamp": message["timestamp"],
+        },
     )
     return message
 
@@ -297,7 +307,7 @@ def delete_message(conversationId: str, messageId: str, user_id: str = Depends(g
     publish_message_event(
         conversationId,
         event_name="del-message",
-        payload={"chatId": conversationId, "messageId": messageId},
+        payload={"id": messageId},
     )
     return None
 
