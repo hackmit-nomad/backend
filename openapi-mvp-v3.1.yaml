@@ -1,0 +1,1198 @@
+openapi: 3.0.3
+info:
+  title: Nomad API (MVP v3.1)
+  version: 3.1.0
+  description: |
+    Extends MVP v3 with **POST /api/ingest/program-crawl** for AI/Dify academic JSON (strict Pydantic + business rules).
+
+    Same as MVP v2, except **messaging is WebSocket-only** (no HTTP under `/messages/conversations`).
+    The backend also starts a **Supabase Realtime** subscription on `public.messages` and pushes
+    `postgres_changes` events to connected WebSocket clients for participants of the affected chat.
+
+    **Ingest auth:** Bearer token must match env `INGEST_API_TOKEN` (not Supabase Auth).
+
+    **Supabase project setup (required for Realtime push):**
+    - Enable Realtime for table `messages` (and optionally `chats`, `chat_participants`) in the Supabase dashboard.
+    - Use a Supabase key with Realtime access (service role or anon with appropriate RLS for server-side subscribe).
+
+    **Client option:** You may also subscribe to Realtime directly from the browser with `@supabase/supabase-js`
+    instead of relying on server fan-out.
+servers:
+  - url: http://localhost:8000
+    description: FastAPI default (ingest + API)
+  - url: http://localhost:3000/api
+    description: Local dev (HTTP)
+  - url: ws://localhost:8000
+    description: Local dev (WebSocket, same host as FastAPI default)
+  - url: https://api.nomad.example.com
+    description: Production HTTP (placeholder)
+  - url: wss://api.nomad.example.com
+    description: Production WebSocket (placeholder)
+tags:
+  - name: Auth
+  - name: Users
+  - name: Courses
+  - name: Planner
+  - name: Communities
+  - name: Feed
+  - name: Messages
+  - name: Calendar
+  - name: Notifications
+  - name: Onboarding
+  - name: Search
+  - name: Ingest
+security:
+  - bearerAuth: []
+paths:
+  /api/ingest/program-crawl:
+    post:
+      tags: [Ingest]
+      summary: Ingest program/course/schedule JSON (Dify / AI crawl)
+      description: |
+        Strict Pydantic validation (`extra=forbid`) plus business rules.
+        Bearer token must equal server env `INGEST_API_TOKEN`.
+        On success returns `validatedPayload` (normalized JSON). Database persistence is optional/future.
+      security:
+        - ingestBearer: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ProgramCrawlIngestPayload" }
+      responses:
+        "200":
+          description: Validated
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/IngestSuccessResponse" }
+        "401":
+          description: Missing or wrong ingest token
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/IngestErrorResponse" }
+        "422":
+          description: Schema or business validation failed
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/IngestErrorResponse" }
+        "503":
+          description: INGEST_API_TOKEN not configured
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/IngestErrorResponse" }
+  /me:
+    get:
+      tags: [Users]
+      summary: Get current user
+      responses:
+        "200":
+          description: User profile
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/User" }
+    patch:
+      tags: [Users]
+      summary: Update current user
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/UpdateUserRequest" }
+      responses:
+        "200":
+          description: Updated user
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/User" }
+    delete:
+      tags: [Users]
+      summary: Delete current user account
+      responses:
+        "204":
+          description: Account removed
+  /users:
+    get:
+      tags: [Users]
+      summary: List/search users
+      parameters:
+        - in: query
+          name: q
+          schema: { type: string }
+        - in: query
+          name: university
+          schema: { type: string }
+        - in: query
+          name: major
+          schema: { type: string }
+        - in: query
+          name: year
+          schema: { type: string }
+        - in: query
+          name: connected
+          schema: { type: boolean }
+      responses:
+        "200":
+          description: Users
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PaginatedUsers" }
+  /users/{userId}:
+    get:
+      tags: [Users]
+      summary: Get user profile
+      parameters:
+        - $ref: "#/components/parameters/UserId"
+      responses:
+        "200":
+          description: User
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/User" }
+  /users/{userId}/connect:
+    post:
+      tags: [Users]
+      summary: Connect with user
+      parameters:
+        - $ref: "#/components/parameters/UserId"
+      responses:
+        "200":
+          description: Connection status
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ConnectionStatusResponse" }
+    delete:
+      tags: [Users]
+      summary: Remove connection
+      parameters:
+        - $ref: "#/components/parameters/UserId"
+      responses:
+        "200":
+          description: Connection status
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ConnectionStatusResponse" }
+
+  /courses:
+    get:
+      tags: [Courses]
+      summary: List courses
+      parameters:
+        - in: query
+          name: q
+          schema: { type: string }
+        - in: query
+          name: department
+          schema: { type: string }
+        - in: query
+          name: difficulty
+          schema:
+            type: string
+            enum: [Intro, Intermediate, Advanced, Graduate]
+      responses:
+        "200":
+          description: Courses
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PaginatedCourses" }
+    post:
+      tags: [Courses]
+      summary: Create course
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateCourseRequest" }
+      responses:
+        "201":
+          description: Created course
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Course" }
+  /courses/{courseId}:
+    get:
+      tags: [Courses]
+      summary: Get course details
+      parameters:
+        - $ref: "#/components/parameters/CourseId"
+      responses:
+        "200":
+          description: Course
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Course" }
+    patch:
+      tags: [Courses]
+      summary: Update course
+      parameters:
+        - $ref: "#/components/parameters/CourseId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/UpdateCourseRequest" }
+      responses:
+        "200":
+          description: Updated course
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Course" }
+    delete:
+      tags: [Courses]
+      summary: Delete course
+      parameters:
+        - $ref: "#/components/parameters/CourseId"
+      responses:
+        "204":
+          description: Course deleted
+  /courses/{courseId}/students:
+    get:
+      tags: [Courses]
+      summary: Get students in course
+      parameters:
+        - $ref: "#/components/parameters/CourseId"
+        - in: query
+          name: connected
+          schema: { type: boolean }
+      responses:
+        "200":
+          description: Classmates
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PaginatedUsers" }
+  /courses/{courseId}/connections:
+    get:
+      tags: [Courses]
+      summary: Get known vs suggested classmates
+      parameters:
+        - $ref: "#/components/parameters/CourseId"
+      responses:
+        "200":
+          description: Connection buckets
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CourseConnections" }
+
+  /planner/courses:
+    get:
+      tags: [Planner]
+      summary: Get planner state
+      responses:
+        "200":
+          description: Planner
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PlannerState" }
+    put:
+      tags: [Planner]
+      summary: Replace planner course IDs
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/UpdatePlannerRequest" }
+      responses:
+        "200":
+          description: Updated planner
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PlannerState" }
+
+  /communities:
+    get:
+      tags: [Communities]
+      summary: List communities
+      parameters:
+        - in: query
+          name: q
+          schema: { type: string }
+        - in: query
+          name: joined
+          schema: { type: boolean }
+      responses:
+        "200":
+          description: Communities
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PaginatedCommunities" }
+    post:
+      tags: [Communities]
+      summary: Create community
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateCommunityRequest" }
+      responses:
+        "201":
+          description: Created community
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Community" }
+  /communities/{communityId}:
+    get:
+      tags: [Communities]
+      summary: Get community
+      parameters:
+        - $ref: "#/components/parameters/CommunityId"
+      responses:
+        "200":
+          description: Community
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Community" }
+    patch:
+      tags: [Communities]
+      summary: Update community
+      parameters:
+        - $ref: "#/components/parameters/CommunityId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/UpdateCommunityRequest" }
+      responses:
+        "200":
+          description: Updated community
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Community" }
+    delete:
+      tags: [Communities]
+      summary: Delete community
+      parameters:
+        - $ref: "#/components/parameters/CommunityId"
+      responses:
+        "204":
+          description: Community deleted
+  /communities/{communityId}/join:
+    post:
+      tags: [Communities]
+      summary: Join community
+      parameters:
+        - $ref: "#/components/parameters/CommunityId"
+      responses:
+        "200":
+          description: Joined
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JoinState" }
+    delete:
+      tags: [Communities]
+      summary: Leave community
+      parameters:
+        - $ref: "#/components/parameters/CommunityId"
+      responses:
+        "200":
+          description: Left
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JoinState" }
+
+  /posts:
+    get:
+      tags: [Feed]
+      summary: List posts
+      parameters:
+        - in: query
+          name: tab
+          schema:
+            type: string
+            enum: [all, following, top]
+        - in: query
+          name: communityId
+          schema: { type: string }
+      responses:
+        "200":
+          description: Posts
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PaginatedPosts" }
+    post:
+      tags: [Feed]
+      summary: Create post
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreatePostRequest" }
+      responses:
+        "201":
+          description: Created post
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Post" }
+  /posts/{postId}:
+    patch:
+      tags: [Feed]
+      summary: Update post
+      parameters:
+        - $ref: "#/components/parameters/PostId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/UpdatePostRequest" }
+      responses:
+        "200":
+          description: Updated post
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Post" }
+    delete:
+      tags: [Feed]
+      summary: Delete post
+      parameters:
+        - $ref: "#/components/parameters/PostId"
+      responses:
+        "204":
+          description: Post deleted
+  /posts/{postId}/reactions:
+    post:
+      tags: [Feed]
+      summary: React to post
+      parameters:
+        - $ref: "#/components/parameters/PostId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PostReactionRequest" }
+      responses:
+        "200":
+          description: Updated post
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Post" }
+  /posts/{postId}/replies:
+    post:
+      tags: [Feed]
+      summary: Create reply
+      parameters:
+        - $ref: "#/components/parameters/PostId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateReplyRequest" }
+      responses:
+        "201":
+          description: Reply created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Reply" }
+
+  /ws/messages:
+    get:
+      tags: [Messages]
+      summary: Messaging WebSocket (replaces HTTP /messages/conversations/*)
+      description: |
+        **WebSocket URL:** `ws://<api-host>/ws/messages` (or `wss://` in production).
+
+        **Auth:** pass JWT as query `?token=<access_token>` **or** send first frame:
+        `{ "type": "auth", "token": "<jwt>" }`.
+
+        **RPC:** after `{ "type": "ready", "userId": "..." }`, send JSON frames:
+        `{ "type": "call", "id": "<correlation-id>", "action": "<name>", "payload": { ... } }`.
+
+        **Actions** (payload fields):
+        - `list_conversations` — `{ "q": "optional filter" }` → `PaginatedConversations`
+        - `create_conversation` — `{ "participants": [], "isGroup": false, "groupName": null }` → `Conversation`
+        - `update_conversation` — `{ "conversationId": "", "groupName": "" }` → `Conversation`
+        - `delete_conversation` — `{ "conversationId": "" }` → `data: null`
+        - `list_messages` — `{ "conversationId": "" }` → `PaginatedMessages`
+        - `send_message` — `{ "conversationId": "", "content": "" }` → `Message`
+        - `delete_message` — `{ "conversationId": "", "messageId": "" }` → `data: null`
+
+        **Responses:** `{ "type": "result", "id": "...", "ok": true, "data": ... }` or
+        `{ "type": "error", "id": "...", "code": "...", "message": "..." }`.
+
+        **Realtime push:** `{ "type": "realtime", "event": "postgres_changes", "table": "messages", "payload": ... }`
+        (when server bridge is active).
+
+        OpenAPI cannot express WebSocket frames; see components `WsClientMessage`, `WsServerMessage`.
+      parameters:
+        - in: query
+          name: token
+          required: false
+          schema: { type: string }
+          description: Supabase access JWT (same as Authorization Bearer elsewhere)
+      responses:
+        "101":
+          description: Switching Protocols (WebSocket)
+        "401":
+          description: Invalid or missing token
+      x-websocket: true
+      x-websocket-path: /ws/messages
+
+  /calendar/events:
+    get:
+      tags: [Calendar]
+      summary: List events
+      parameters:
+        - in: query
+          name: start
+          schema: { type: string, format: date-time }
+        - in: query
+          name: end
+          schema: { type: string, format: date-time }
+      responses:
+        "200":
+          description: Events
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PaginatedCalendarEvents" }
+    post:
+      tags: [Calendar]
+      summary: Create event
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateCalendarEventRequest" }
+      responses:
+        "201":
+          description: Event created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CalendarEvent" }
+  /calendar/events/{eventId}:
+    patch:
+      tags: [Calendar]
+      summary: Update event
+      parameters:
+        - in: path
+          name: eventId
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/UpdateCalendarEventRequest" }
+      responses:
+        "200":
+          description: Updated event
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CalendarEvent" }
+    delete:
+      tags: [Calendar]
+      summary: Delete event
+      parameters:
+        - in: path
+          name: eventId
+          required: true
+          schema: { type: string }
+      responses:
+        "204":
+          description: Event deleted
+
+  /notifications:
+    get:
+      tags: [Notifications]
+      summary: List notifications
+      responses:
+        "200":
+          description: Notifications
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/NotificationsResponse" }
+  /notifications/read-all:
+    post:
+      tags: [Notifications]
+      summary: Mark all read
+      responses:
+        "204":
+          description: Done
+  /notifications/{notificationId}/read:
+    post:
+      tags: [Notifications]
+      summary: Mark notification read
+      parameters:
+        - in: path
+          name: notificationId
+          required: true
+          schema: { type: string }
+      responses:
+        "204":
+          description: Done
+
+  /onboarding/options:
+    get:
+      tags: [Onboarding]
+      security: []
+      summary: Get onboarding option lists
+      responses:
+        "200":
+          description: Option catalogs
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OnboardingOptionsResponse" }
+  /onboarding/complete:
+    post:
+      tags: [Onboarding]
+      summary: Complete onboarding
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/OnboardingCompleteRequest" }
+      responses:
+        "200":
+          description: Updated user
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/User" }
+
+  /search:
+    get:
+      tags: [Search]
+      summary: Global search
+      parameters:
+        - in: query
+          name: q
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Search results
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SearchResponse" }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+    ingestBearer:
+      type: http
+      scheme: bearer
+      bearerFormat: INGEST_API_TOKEN
+      description: Value must match server environment variable INGEST_API_TOKEN
+  parameters:
+    UserId:
+      in: path
+      name: userId
+      required: true
+      schema: { type: string }
+    CourseId:
+      in: path
+      name: courseId
+      required: true
+      schema: { type: string }
+    CommunityId:
+      in: path
+      name: communityId
+      required: true
+      schema: { type: string }
+    PostId:
+      in: path
+      name: postId
+      required: true
+      schema: { type: string }
+    ConversationId:
+      in: path
+      name: conversationId
+      required: true
+      schema: { type: string }
+  schemas:
+    SignupRequest:
+      type: object
+      required: [name, email, password]
+      properties:
+        name: { type: string }
+        email: { type: string, format: email }
+        password: { type: string, minLength: 8 }
+    LoginRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email: { type: string, format: email }
+        password: { type: string }
+    AuthResponse:
+      type: object
+      required: [accessToken, user]
+      properties:
+        accessToken: { type: string }
+        refreshToken: { type: string }
+        user: { $ref: "#/components/schemas/User" }
+    User:
+      type: object
+      properties:
+        id: { type: string }
+        name: { type: string }
+        avatar: { type: string }
+        university: { type: string }
+        major: { type: string }
+        minor: { type: string, nullable: true }
+        year: { type: string }
+        bio: { type: string }
+        headline: { type: string, nullable: true }
+        interests:
+          type: array
+          items: { type: string }
+        courses:
+          type: array
+          items: { type: string }
+        communities:
+          type: array
+          items: { type: string }
+        isConnected: { type: boolean }
+        isOnline: { type: boolean }
+    UpdateUserRequest:
+      type: object
+      properties:
+        name: { type: string }
+        bio: { type: string }
+        headline: { type: string }
+        major: { type: string }
+        minor: { type: string }
+        year: { type: string }
+        interests:
+          type: array
+          items: { type: string }
+    Course:
+      type: object
+      properties:
+        id: { type: string }
+        code: { type: string }
+        title: { type: string }
+        credits: { type: integer }
+        description: { type: string }
+        prerequisites:
+          type: array
+          items: { type: string }
+        nextCourses:
+          type: array
+          items: { type: string }
+        department: { type: string }
+        difficulty:
+          type: string
+          enum: [Intro, Intermediate, Advanced, Graduate]
+        tags:
+          type: array
+          items: { type: string }
+        students:
+          type: array
+          items: { type: string }
+        rating: { type: number, format: float }
+    CreateCourseRequest:
+      type: object
+      properties:
+        code: { type: string }
+        title: { type: string }
+        credits: { type: integer }
+        description: { type: string }
+        prerequisites:
+          type: array
+          items: { type: string }
+        nextCourses:
+          type: array
+          items: { type: string }
+        department: { type: string }
+        difficulty:
+          type: string
+          enum: [Intro, Intermediate, Advanced, Graduate]
+        tags:
+          type: array
+          items: { type: string }
+    UpdateCourseRequest:
+      allOf:
+        - $ref: "#/components/schemas/CreateCourseRequest"
+    PlannerState:
+      type: object
+      properties:
+        courseIds:
+          type: array
+          items: { type: string }
+    UpdatePlannerRequest:
+      type: object
+      required: [courseIds]
+      properties:
+        courseIds:
+          type: array
+          items: { type: string }
+    Community:
+      type: object
+      properties:
+        id: { type: string }
+        name: { type: string }
+        description: { type: string }
+        icon: { type: string }
+        banner: { type: string, nullable: true }
+        color: { type: string }
+        members: { type: integer }
+        posts: { type: integer }
+        tags:
+          type: array
+          items: { type: string }
+        isJoined: { type: boolean }
+        university: { type: string, nullable: true }
+    CreateCommunityRequest:
+      type: object
+      properties:
+        name: { type: string }
+        description: { type: string }
+        icon: { type: string }
+        banner: { type: string }
+        color: { type: string }
+        tags:
+          type: array
+          items: { type: string }
+        university: { type: string }
+    UpdateCommunityRequest:
+      allOf:
+        - $ref: "#/components/schemas/CreateCommunityRequest"
+    JoinState:
+      type: object
+      properties:
+        isJoined: { type: boolean }
+    Post:
+      type: object
+      properties:
+        id: { type: string }
+        authorId: { type: string }
+        communityId: { type: string }
+        title: { type: string }
+        content: { type: string }
+        timestamp: { type: string, format: date-time }
+        likes: { type: integer }
+        isLiked: { type: boolean }
+        tags:
+          type: array
+          items: { type: string }
+        replies:
+          type: array
+          items: { $ref: "#/components/schemas/Reply" }
+    Reply:
+      type: object
+      properties:
+        id: { type: string }
+        authorId: { type: string }
+        content: { type: string }
+        timestamp: { type: string, format: date-time }
+        likes: { type: integer }
+        isLiked: { type: boolean }
+    CreatePostRequest:
+      type: object
+      required: [communityId, title, content]
+      properties:
+        communityId: { type: string }
+        title: { type: string }
+        content: { type: string }
+        tags:
+          type: array
+          items: { type: string }
+    UpdatePostRequest:
+      type: object
+      properties:
+        title: { type: string }
+        content: { type: string }
+        tags:
+          type: array
+          items: { type: string }
+    PostReactionRequest:
+      type: object
+      required: [reaction]
+      properties:
+        reaction:
+          type: string
+          enum: [like, celebrate, insightful, curious, support]
+    CreateReplyRequest:
+      type: object
+      required: [content]
+      properties:
+        content: { type: string }
+    Conversation:
+      type: object
+      properties:
+        id: { type: string }
+        participants:
+          type: array
+          items: { type: string }
+        isGroup: { type: boolean }
+        groupName: { type: string, nullable: true }
+        lastMessage: { type: string }
+        lastTimestamp: { type: string, format: date-time }
+        unread: { type: integer }
+    CreateConversationRequest:
+      type: object
+      required: [participants]
+      properties:
+        participants:
+          type: array
+          items: { type: string }
+        isGroup: { type: boolean }
+        groupName: { type: string }
+    UpdateConversationRequest:
+      type: object
+      properties:
+        groupName: { type: string }
+    Message:
+      type: object
+      properties:
+        id: { type: string }
+        senderId: { type: string }
+        content: { type: string }
+        timestamp: { type: string, format: date-time }
+    CreateMessageRequest:
+      type: object
+      required: [content]
+      properties:
+        content: { type: string }
+    CalendarEvent:
+      type: object
+      properties:
+        id: { type: string }
+        title: { type: string }
+        date: { type: string, format: date }
+        startTime: { type: string }
+        endTime: { type: string }
+        location: { type: string, nullable: true }
+        type:
+          type: string
+          enum: [class, study, social, deadline, custom]
+        color: { type: string }
+    CreateCalendarEventRequest:
+      type: object
+      properties:
+        title: { type: string }
+        date: { type: string, format: date }
+        startTime: { type: string }
+        endTime: { type: string }
+        location: { type: string }
+        type:
+          type: string
+          enum: [class, study, social, deadline, custom]
+        color: { type: string }
+    UpdateCalendarEventRequest:
+      allOf:
+        - $ref: "#/components/schemas/CreateCalendarEventRequest"
+    Notification:
+      type: object
+      properties:
+        id: { type: string }
+        type: { type: string }
+        fromId: { type: string }
+        content: { type: string }
+        timestamp: { type: string, format: date-time }
+        read: { type: boolean }
+    OnboardingOptionsResponse:
+      type: object
+      properties:
+        universities:
+          type: array
+          items: { type: string }
+        majors:
+          type: array
+          items: { type: string }
+        interests:
+          type: array
+          items: { type: string }
+    OnboardingCompleteRequest:
+      type: object
+      required: [university, fullName, majors]
+      properties:
+        university: { type: string }
+        fullName: { type: string }
+        majors:
+          type: array
+          items: { type: string }
+        minors:
+          type: array
+          items: { type: string }
+        interests:
+          type: array
+          items: { type: string }
+    ConnectionStatusResponse:
+      type: object
+      properties:
+        userId: { type: string }
+        status:
+          type: string
+          enum: [none, pending, incoming, connected]
+    CourseConnections:
+      type: object
+      properties:
+        known:
+          type: array
+          items: { $ref: "#/components/schemas/User" }
+        suggested:
+          type: array
+          items: { $ref: "#/components/schemas/User" }
+    SearchResponse:
+      type: object
+      properties:
+        users:
+          type: array
+          items: { $ref: "#/components/schemas/User" }
+        courses:
+          type: array
+          items: { $ref: "#/components/schemas/Course" }
+        communities:
+          type: array
+          items: { $ref: "#/components/schemas/Community" }
+        posts:
+          type: array
+          items: { $ref: "#/components/schemas/Post" }
+    PaginatedUsers:
+      type: object
+      properties:
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/User" }
+        total: { type: integer }
+    PaginatedCourses:
+      type: object
+      properties:
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/Course" }
+        total: { type: integer }
+    PaginatedCommunities:
+      type: object
+      properties:
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/Community" }
+        total: { type: integer }
+    PaginatedPosts:
+      type: object
+      properties:
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/Post" }
+        total: { type: integer }
+    PaginatedConversations:
+      type: object
+      properties:
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/Conversation" }
+        total: { type: integer }
+    PaginatedMessages:
+      type: object
+      properties:
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/Message" }
+        total: { type: integer }
+    PaginatedCalendarEvents:
+      type: object
+      properties:
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/CalendarEvent" }
+        total: { type: integer }
+    NotificationsResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/Notification" }
+        unread: { type: integer }
+    WsAuthMessage:
+      type: object
+      required: [type, token]
+      properties:
+        type: { type: string, enum: [auth] }
+        token: { type: string, description: Supabase JWT access token }
+    WsCallMessage:
+      type: object
+      required: [type, id, action]
+      properties:
+        type: { type: string, enum: [call] }
+        id: { type: string }
+        action: { type: string }
+        payload: { type: object, additionalProperties: true }
+    WsReadyMessage:
+      type: object
+      required: [type, userId]
+      properties:
+        type: { type: string, enum: [ready] }
+        userId: { type: string }
+    WsResultMessage:
+      type: object
+      required: [type, id, ok]
+      properties:
+        type: { type: string, enum: [result] }
+        id: { type: string }
+        ok: { type: boolean }
+        data: {}
+    WsErrorMessage:
+      type: object
+      required: [type, id, code, message]
+      properties:
+        type: { type: string, enum: [error] }
+        id: { type: string }
+        code: { type: string }
+        message: { type: string }
+        httpStatus: { type: integer }
+    WsRealtimeMessage:
+      type: object
+      required: [type, event, table]
+      properties:
+        type: { type: string, enum: [realtime] }
+        event: { type: string, example: postgres_changes }
+        table: { type: string, example: messages }
+        payload: {}
+    IngestSuccessResponse:
+      type: object
+      required: [success, message, summary, validatedPayload]
+      properties:
+        success: { type: boolean, enum: [true] }
+        message: { type: string }
+        summary:
+          type: object
+          properties:
+            schoolName: { type: string }
+            programName: { type: string }
+            catalogYear: { type: integer, nullable: true }
+            categoriesCount: { type: integer }
+            courseCatalogEntriesCount: { type: integer }
+            sectionOfferingsCount: { type: integer }
+            warnings:
+              type: array
+              items: { type: string }
+        validatedPayload:
+          type: object
+          description: Normalized JSON (same structure as request, after Pydantic coercion)
+    IngestErrorResponse:
+      type: object
+      required: [success, message, errors]
+      properties:
+        success: { type: boolean, enum: [false] }
+        message: { type: string }
+        errors:
+          type: array
+          items: { type: string }
+    ProgramCrawlIngestPayload:
+      type: object
+      additionalProperties: false
+      description: |
+        Full strict schema is implemented in backend `app/schemas/program_crawl.py` (Pydantic, extra=forbid).
+        Top-level keys must be exactly: meta, school, program, programVersion, categories, courseCatalogEntries, sectionOfferings.
+      required:
+        - meta
+        - school
+        - program
+        - programVersion
+        - categories
+        - courseCatalogEntries
+        - sectionOfferings
+      properties:
+        meta: { type: object, additionalProperties: true }
+        school: { type: object, additionalProperties: true }
+        program: { type: object, additionalProperties: true }
+        programVersion: { type: object, additionalProperties: true }
+        categories:
+          type: array
+          items: { type: object, additionalProperties: true }
+        courseCatalogEntries:
+          type: array
+          items: { type: object, additionalProperties: true }
+        sectionOfferings:
+          type: array
+          items: { type: object, additionalProperties: true }

@@ -37,3 +37,17 @@ def get_current_user_id(
 
     return resolved_user_id
 
+
+def get_user_id_from_access_token(token: str) -> str:
+    """Validate JWT access token and return Supabase user id (for WebSocket query auth)."""
+    if not token or not token.strip():
+        raise ValueError("Missing token")
+    try:
+        user_resp = supabase.auth.get_user(token.strip())
+    except Exception as exc:
+        raise ValueError("Invalid or expired token") from exc
+    user = getattr(user_resp, "user", None)
+    if not user or not getattr(user, "id", None):
+        raise ValueError("Invalid token payload")
+    return str(user.id)
+

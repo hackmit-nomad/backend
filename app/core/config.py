@@ -1,7 +1,5 @@
 import os
-from dotenv_vault import load_dotenv
 
-load_dotenv()
 
 def env(name: str, default: str | None = None) -> str:
     val = os.environ.get(name, default)
@@ -12,3 +10,7 @@ def env(name: str, default: str | None = None) -> str:
 
 SUPABASE_URL = env("SUPABASE_URL", "")
 SUPABASE_KEY = env("SUPABASE_KEY", "")
+
+# Service-to-service ingestion (POST /api/ingest/program-crawl). Empty disables the endpoint (503).
+INGEST_API_TOKEN: str = os.environ.get("INGEST_API_TOKEN", "")
+

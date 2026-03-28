@@ -499,3 +499,19 @@ notifications [icon: bell, color: blue] {
 profiles.id <> calendar_events.userId
 profiles.id <> notifications.userId
 
+// --- API v3.1: POST /api/ingest/program-crawl (optional persistence) ---
+// The ingestion JSON maps logically to schools, programs, program_versions, courses,
+// course_versions, program_requirement_categories, program_course_requirements,
+// course_sections, meeting_times, etc. No new tables are strictly required for validation-only mode.
+// Optional audit / queue (if you persist before ETL):
+// processing_jobs { jobType: "program_crawl", inputPayload: <full JSON>, status, ... }
+// or a dedicated table:
+// program_crawl_ingest_log [icon: file-text, color: blue] {
+//  id uuid pk
+//  payload json
+//  validatedAt timestamp
+//  status string
+//  errorMsg string
+//  createdAt timestamp
+// }
+

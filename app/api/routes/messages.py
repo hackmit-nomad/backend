@@ -11,6 +11,22 @@ from app.db.supabase import supabase
 
 router = APIRouter(prefix="/messages", tags=["Messages"])
 
+"""
+message:sent
+@description Emitted when a new chat message is sent
+@params Message message, string chatId
+@returns void emitted
+
+message:updated
+@description Emitted when a chat message is updated
+@params Message message, string chatId
+@returns void emitted
+
+message:deleted
+@description Emitted when a chat message is deleted
+@params string messageId, string chatId
+@returns void emitted
+"""
 
 @router.get("/conversations")
 def list_conversations(q: str | None = Query(default=None), user_id: str = Depends(get_current_user_id)) -> dict[str, Any]:
