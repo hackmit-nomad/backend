@@ -55,8 +55,8 @@ def claim_or_link_nfc(uuid: str, uid_user: str = Depends(get_current_user_id)) -
             .limit(1)
             .execute()
         ).data or []
-    except APIError as exc:
-        raise HTTPException(status_code=500, detail="Failed to read NFC tag") from exc
+    except APIError as ignored:
+        rows = None
 
     row = rows[0] if rows else None
     uid_db = str(row["claimedByUserId"]) if row and row.get("claimedByUserId") else None
