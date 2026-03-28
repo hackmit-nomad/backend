@@ -167,14 +167,64 @@ def course_connections(courseId: str, user_id: str = Depends(get_current_user_id
     return {"known": known, "suggested": suggested}
 
 
-def _course_connections(course_id: str, user_id: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    uc = (
-        supabase.table("user_courses")
-        .select("userId, profiles!inner(*)")
-        .eq("courseVersionId", course_id)
+@router.get("/{courseId}/connections/graph")
+def course_connections_graph(courseId: str, user_id: str = Depends(get_current_user_id)) -> dict[str, Any]:
+    classmates = _classmates_for_course(courseId, user_id)
+    me_profile = supabase.table("profiles").select("*").eq("id", user_id).single().execute().data
+    if not me_profile:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    participant_ids = [user_id, *[p["id"] for p in classmates]]
+    if not participant_ids:
+        return {"nodes": [], "edges": []}
+
+    connected_rows = (
+        supabase.table("friendships")
+        .select("userId,friendId,status")
+        .eq("status", "connected")
+        .in_("userId", participant_ids)
         .execute()
     ).data or []
-    classmates = [row["profiles"] for row in uc if row.get("profiles") and row.get("profiles")["id"] != user_id]
+
+    participant_set = set(participant_ids)
+    unique_edges: set[tuple[str, str]] = set()
+    for row in connected_rows:
+        src = row.get("userId")
+        dst = row.get("friendId")
+        if not src or not dst or src == dst:
+            continue
+        if src not in participant_set or dst not in participant_set:
+            continue
+        a, b = sorted((src, dst))
+        unique_edges.add((a, b))
+
+    me_connected_ids = {b if a == user_id else a for a, b in unique_edges if user_id in (a, b)}
+    classmate_ids = {p["id"] for p in classmates}
+    nodes = [
+        {
+            **_profile_to_user(me_profile),
+            "isMe": True,
+            "isClassmate": False,
+            "isConnected": False,
+        }
+    ]
+    for profile in classmates:
+        pid = profile["id"]
+        nodes.append(
+            {
+                **_profile_to_user(profile),
+                "isMe": False,
+                "isClassmate": pid in classmate_ids,
+                "isConnected": pid in me_connected_ids,
+            }
+        )
+
+    edges = [{"source": a, "target": b} for a, b in sorted(unique_edges)]
+    return {"nodes": nodes, "edges": edges}
+
+
+def _course_connections(course_id: str, user_id: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    classmates = _classmates_for_course(course_id, user_id)
 
     rel = (
         supabase.table("friendships")
@@ -187,6 +237,16 @@ def _course_connections(course_id: str, user_id: str) -> tuple[list[dict[str, An
     known = [_profile_to_user(p) for p in classmates if p["id"] in connected_ids]
     suggested = [_profile_to_user(p) for p in classmates if p["id"] not in connected_ids]
     return known, suggested
+
+
+def _classmates_for_course(course_id: str, user_id: str) -> list[dict[str, Any]]:
+    uc = (
+        supabase.table("user_courses")
+        .select("userId, profiles!inner(*)")
+        .eq("courseVersionId", course_id)
+        .execute()
+    ).data or []
+    return [row["profiles"] for row in uc if row.get("profiles") and row.get("profiles")["id"] != user_id]
 
 
 def _cv_to_course(cv: dict[str, Any]) -> dict[str, Any]:

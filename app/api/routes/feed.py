@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from collections import Counter
+from datetime import datetime, timedelta, timezone
+import math
 from typing import Literal
 import re
 
@@ -72,6 +74,42 @@ def _merge_tags(*tag_groups: list[str] | None) -> list[str]:
     return merged
 
 
+def _normalize_tokens(values: list[str] | None) -> list[str]:
+    if not values:
+        return []
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        token = value.strip().lstrip("#").lower()
+        if not token or token in seen:
+            continue
+        seen.add(token)
+        cleaned.append(token)
+    return cleaned
+
+
+def _parse_csv_tokens(raw: str | None) -> list[str]:
+    if not raw:
+        return []
+    return _normalize_tokens([part for part in raw.split(",") if part.strip()])
+
+
+def _cosine_similarity(query_tokens: list[str], post_tokens: list[str]) -> float:
+    if not query_tokens or not post_tokens:
+        return 0.0
+    query_counter = Counter(query_tokens)
+    post_counter = Counter(post_tokens)
+    shared = set(query_counter) & set(post_counter)
+    if not shared:
+        return 0.0
+    dot_product = sum(query_counter[token] * post_counter[token] for token in shared)
+    query_norm = math.sqrt(sum(v * v for v in query_counter.values()))
+    post_norm = math.sqrt(sum(v * v for v in post_counter.values()))
+    if query_norm == 0 or post_norm == 0:
+        return 0.0
+    return dot_product / (query_norm * post_norm)
+
+
 def _list_comment_reactions(comment_ids: list[str]) -> list[dict]:
     if not comment_ids:
         return []
@@ -92,6 +130,8 @@ def _list_comment_reactions(comment_ids: list[str]) -> list[dict]:
 def list_feed_posts(
     tab: str | None = Query(default="all"),
     communityId: str | None = Query(default=None),
+    interests: str | None = Query(default=None),
+    tags: str | None = Query(default=None),
     user_id: str = Depends(get_current_user_id),
 ) -> dict:
     query = (
@@ -102,7 +142,61 @@ def list_feed_posts(
     if communityId:
         query = query.eq("communityId", communityId)
     posts = (query.order("createdAt", desc=True).execute().data) or []
-    items = [_post_to_api(p, user_id) for p in posts]
+
+    user_profile = (
+        supabase.table("profiles")
+        .select("interests,tags")
+        .eq("id", user_id)
+        .limit(1)
+        .execute()
+        .data
+    ) or []
+    profile = user_profile[0] if user_profile else {}
+    profile_tokens = _normalize_tokens((profile.get("interests") or []) + (profile.get("tags") or []))
+    interest_tokens = _parse_csv_tokens(interests)
+    tag_tokens = _parse_csv_tokens(tags)
+    query_tokens = _normalize_tokens(profile_tokens + interest_tokens + tag_tokens)
+
+    scored_posts: list[tuple[float, dict]] = []
+    for post in posts:
+        post_tokens = _normalize_tokens((post.get("tags") or []) + _extract_hashtags(post.get("title")) + _extract_hashtags(post.get("content")))
+        similarity = _cosine_similarity(query_tokens, post_tokens)
+        if (interest_tokens or tag_tokens) and similarity <= 0:
+            continue
+        scored_posts.append((similarity, post))
+
+    if query_tokens:
+        scored_posts.sort(key=lambda row: row[0], reverse=True)
+
+    items = [_post_to_api(post, user_id) for _, post in scored_posts]
+    if tab == "top":
+        items.sort(key=lambda item: item.get("likes", 0), reverse=True)
+    return {"items": items, "total": len(items)}
+
+
+@router.get("/posts/tags/trending")
+def list_trending_tags(
+    days: int = Query(default=3, ge=1, le=14),
+    limit: int = Query(default=8, ge=1, le=50),
+    communityId: str | None = Query(default=None),
+) -> dict:
+    since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    query = (
+        supabase.table("posts")
+        .select("tags,createdAt")
+        .is_("deletedAt", "null")
+        .gte("createdAt", since)
+    )
+    if communityId:
+        query = query.eq("communityId", communityId)
+    rows = query.execute().data or []
+
+    counts: Counter[str] = Counter()
+    for row in rows:
+        for tag in _normalize_tokens(row.get("tags") or []):
+            counts[tag] += 1
+
+    items = [{"tag": tag, "count": count} for tag, count in counts.most_common(limit)]
     return {"items": items, "total": len(items)}
 
 
