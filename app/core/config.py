@@ -19,8 +19,9 @@ PUSHER_APP_ID: str = env("PUSHER_APP_ID", "")
 PUSHER_KEY: str = env("PUSHER_KEY", "")
 PUSHER_SECRET: str = env("PUSHER_SECRET", "")
 PUSHER_CLUSTER: str = env("PUSHER_CLUSTER", "")
-# Dify API key for resume/CV parsing workflow.
-DIFY_API_KEY: str = env("DIFY_API_KEY", "")
+# Dify API key aliases; prefer DIFFY_API_KEY for current setup.
+DIFFY_API_KEY: str = env("DIFFY_API_KEY", "")
+# Backwards-compatible alias used by older code paths.
 # OpenAI API key for resume/CV parsing and tag extraction.
 OPENAI_API_KEY: str = env("OPENAI_API_KEY", "")
 

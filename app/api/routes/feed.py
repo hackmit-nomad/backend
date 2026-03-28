@@ -127,6 +127,12 @@ def _list_comment_reactions(comment_ids: list[str]) -> list[dict]:
         return []
 
 
+def _is_reaction_schema_error(exc: APIError) -> bool:
+    message = str(exc).lower()
+    reaction_terms = ("reaction", "enum", "check constraint", "invalid input value")
+    return "post_reactions" in message and any(term in message for term in reaction_terms)
+
+
 @router.get("/posts")
 def list_feed_posts(
     tab: str | None = Query(default="all"),
@@ -280,12 +286,24 @@ def react_to_post(
         .data
     ) or []
     existing = existing_rows[0] if existing_rows else None
-    if existing and existing.get("reaction") == body.reaction:
-        supabase.table("post_reactions").delete().eq("id", existing["id"]).execute()
-    elif existing:
-        supabase.table("post_reactions").update({"reaction": body.reaction}).eq("id", existing["id"]).execute()
-    else:
-        supabase.table("post_reactions").insert({"postId": postId, "userId": user_id, "reaction": body.reaction}).execute()
+    try:
+        if existing and existing.get("reaction") == body.reaction:
+            supabase.table("post_reactions").delete().eq("id", existing["id"]).execute()
+        elif existing:
+            supabase.table("post_reactions").update({"reaction": body.reaction}).eq("id", existing["id"]).execute()
+        else:
+            supabase.table("post_reactions").insert({"postId": postId, "userId": user_id, "reaction": body.reaction}).execute()
+    except APIError as exc:
+        if _is_reaction_schema_error(exc):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Database reaction schema only supports a subset of reactions. "
+                    "Update the post_reactions.reaction constraint/enum to allow: "
+                    "like, celebrate, insightful, curious, support."
+                ),
+            ) from exc
+        raise
     return _post_to_api(post, user_id)
 
 

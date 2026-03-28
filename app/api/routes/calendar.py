@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+import json
+import re
 from datetime import datetime, timezone
 from typing import Any
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
 from app.api.deps import get_current_user_id
+from app.core.config import DIFFY_API_KEY
 from app.db.supabase import supabase
 
 router = APIRouter(prefix="/calendar", tags=["Calendar"])
@@ -30,6 +34,11 @@ class UpdateCalendarEventRequest(BaseModel):
     location: str | None = None
     type: str | None = None
     color: str | None = None
+
+
+class AgentChatScheduleRequest(BaseModel):
+    agenda: str
+    prompt: str | None = None
 
 
 @router.get("/events")
@@ -126,6 +135,26 @@ def delete_event(eventId: str, user_id: str = Depends(get_current_user_id)) -> N
     return None
 
 
+@router.post("/events/agent-chat-schedule")
+async def agent_chat_schedule(
+    body: AgentChatScheduleRequest,
+    user_id: str = Depends(get_current_user_id),
+) -> list[dict[str, Any]]:
+    if not DIFFY_API_KEY:
+        raise HTTPException(status_code=503, detail="DIFFY_API_KEY not configured")
+
+    if not body.agenda.strip():
+        return []
+
+    raw_answer = await _call_diffy_schedule_agent(
+        agenda=body.agenda,
+        prompt=body.prompt or "Suggest additional agenda events based on the current schedule.",
+        user_id=user_id,
+    )
+    parsed = _extract_json_array(raw_answer)
+    return [_sanitize_event_request(item) for item in parsed if isinstance(item, dict)]
+
+
 def _row_to_api(r: dict[str, Any]) -> dict[str, Any]:
     return {
         "id": r["id"],
@@ -137,4 +166,97 @@ def _row_to_api(r: dict[str, Any]) -> dict[str, Any]:
         "type": r.get("type"),
         "color": r.get("color") or "",
     }
+
+
+async def _call_diffy_schedule_agent(*, agenda: str, prompt: str, user_id: str) -> str:
+    dify_base_url = "https://api.dify.ai/v1"
+    workflow_url = f"{dify_base_url}/workflows/run"
+    headers = {
+        "Authorization": f"Bearer {DIFFY_API_KEY}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "inputs": {
+            "events": agenda,
+            "prompt": prompt,
+        },
+        "response_mode": "blocking",
+        "user": user_id,
+    }
+
+    async with httpx.AsyncClient(timeout=45) as client:
+        try:
+            response = await client.post(workflow_url, json=payload, headers=headers)
+        except httpx.HTTPError as exc:
+            raise HTTPException(
+                status_code=502,
+                detail=f"Diffy API transport error: {exc.__class__.__name__}: {str(exc)[:220]}",
+            ) from exc
+
+    if response.status_code != 200:
+        raise HTTPException(status_code=502, detail=f"Diffy API error: {response.status_code} - {response.text[:700]}")
+
+    data = response.json()
+    answer = _extract_workflow_text_answer(data)
+    if answer.strip():
+        return answer
+    raise HTTPException(status_code=502, detail="Diffy API returned no textual output in workflow outputs")
+
+
+def _extract_workflow_text_answer(data: dict[str, Any]) -> str:
+    # workflow: response text usually lives inside data.outputs.
+    print(data)
+    workflow_data = data.get("data")
+    print(workflow_data.get("outputs").get("events"))
+    return workflow_data.get("outputs").get("events")
+
+
+def _extract_json_array(raw_text: str) -> list[Any]:
+    cleaned = raw_text.strip()
+    if cleaned.startswith("```"):
+        cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned)
+        cleaned = re.sub(r"\s*```$", "", cleaned)
+
+    try:
+        parsed = json.loads(cleaned)
+        if isinstance(parsed, list):
+            return parsed
+    except json.JSONDecodeError:
+        pass
+
+    match = re.search(r"\[[\s\S]*\]", cleaned)
+    print(cleaned)
+    if not match:
+        raise HTTPException(status_code=422, detail="Could not parse event array from Diffy response")
+    try:
+        parsed = json.loads(match.group())
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=422, detail="Invalid JSON array returned by Diffy") from exc
+    if not isinstance(parsed, list):
+        raise HTTPException(status_code=422, detail="Diffy response was not a JSON array")
+    return parsed
+
+
+def _sanitize_event_request(item: dict[str, Any]) -> dict[str, Any]:
+    normalized_type = str(item.get("type") or "").strip()
+    if normalized_type not in {"class", "study", "social", "deadline", "custom"}:
+        normalized_type = "custom"
+
+    sanitized: dict[str, Any] = {
+        "title": str(item.get("title") or "").strip(),
+        "date": str(item.get("date") or "").strip(),
+        "startTime": str(item.get("startTime") or "").strip(),
+        "endTime": str(item.get("endTime") or "").strip(),
+        "type": normalized_type,
+    }
+
+    location = item.get("location")
+    if location is not None:
+        sanitized["location"] = str(location).strip()
+
+    color = item.get("color")
+    if color is not None:
+        sanitized["color"] = str(color).strip()
+
+    return sanitized
 
