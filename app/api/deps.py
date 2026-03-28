@@ -29,7 +29,24 @@ def get_current_user_id(
     if not user or not getattr(user, "id", None):
         raise HTTPException(status_code=401, detail="Invalid token payload")
 
-    resolved_user_id = str(user.id)
+    auth_user_id = str(user.id)
+    profile_rows = (
+        supabase.table("profiles")
+        .select("id")
+        .eq("id", auth_user_id)
+        .limit(1)
+        .execute()
+        .data
+    ) or []
+    if not profile_rows or not profile_rows[0].get("id"):
+        # First authenticated call after signup: ensure app profile exists.
+        try:
+            supabase.table("profiles").upsert({"id": auth_user_id}).execute()
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail="Failed to initialize user profile") from exc
+        resolved_user_id = auth_user_id
+    else:
+        resolved_user_id = str(profile_rows[0]["id"])
 
     # Optional pass-through header from frontend is allowed, but cannot override token identity.
     if x_user_id and x_user_id != resolved_user_id:

@@ -15,7 +15,7 @@ Reaction = Literal["like", "celebrate", "insightful", "curious", "support"]
 
 
 class CreatePostRequest(BaseModel):
-    communityId: str
+    communityId: str | None = None
     title: str
     content: str
     tags: list[str] | None = None
@@ -23,6 +23,7 @@ class CreatePostRequest(BaseModel):
 
 class CreateReplyRequest(BaseModel):
     content: str
+    parentCommentId: str | None = None
 
 
 class UpdatePostRequest(BaseModel):
@@ -41,7 +42,11 @@ def list_feed_posts(
     communityId: str | None = Query(default=None),
     user_id: str = Depends(get_current_user_id),
 ) -> dict:
-    query = supabase.table("posts").select("*").is_("deletedAt", "null")
+    query = (
+        supabase.table("posts")
+        .select("*, profiles!posts_authorId_fkey(id, displayName, avatarUrl)")
+        .is_("deletedAt", "null")
+    )
     if communityId:
         query = query.eq("communityId", communityId)
     posts = (query.order("createdAt", desc=True).execute().data) or []
@@ -54,13 +59,14 @@ def create_post(body: CreatePostRequest, user_id: str = Depends(get_current_user
     now = datetime.now(timezone.utc).isoformat()
     data = {
         "authorId": user_id,
-        "communityId": body.communityId,
         "title": body.title,
         "content": body.content,
         "tags": body.tags or [],
         "createdAt": now,
         "updatedAt": now,
     }
+    if body.communityId:
+        data["communityId"] = body.communityId
     resp = supabase.table("posts").insert(data).execute()
     if not resp.data:
         raise HTTPException(status_code=500, detail="Failed to create post")
@@ -108,52 +114,71 @@ def reply_to_post(postId: str, body: CreateReplyRequest, user_id: str = Depends(
                 "postId": postId,
                 "authorId": user_id,
                 "content": body.content,
-                "parentCommentId": None,
+                "parentCommentId": body.parentCommentId or None,
                 "createdAt": now,
                 "updatedAt": now,
             }
         )
         .execute()
     )
+
     if not resp.data:
         raise HTTPException(status_code=500, detail="Failed to create reply")
     row = resp.data[0]
+    reply = _reply_to_api(row)
+    if not reply.get("timestamp"):
+        reply["timestamp"] = now
+    return reply
+
+
+def _reply_to_api(r: dict, replies: list[dict] | None = None) -> dict:
     return {
-        "id": row["id"],
-        "authorId": row["authorId"],
-        "content": row["content"],
-        "timestamp": row.get("createdAt") or now,
+        "id": r["id"],
+        "authorId": r["authorId"],
+        "content": r["content"],
+        "timestamp": r.get("createdAt"),
         "likes": 0,
         "isLiked": False,
+        "childReplies": replies or [],
     }
-
 
 def _post_to_api(p: dict, user_id: str) -> dict:
     reactions = (supabase.table("post_reactions").select("reaction,userId").eq("postId", p["id"]).execute().data) or []
     likes = sum(1 for r in reactions if r.get("reaction") == "like")
     my = next((r for r in reactions if r.get("userId") == user_id), None)
 
-    replies_rows = (
+    comments_rows = (
         supabase.table("comments")
         .select("*")
         .eq("postId", p["id"])
-        .is_("parentCommentId", "null")
         .is_("deletedAt", "null")
         .order("createdAt", desc=False)
         .execute()
         .data
     ) or []
-    replies = [
-        {
-            "id": r["id"],
-            "authorId": r["authorId"],
-            "content": r["content"],
-            "timestamp": r.get("createdAt"),
-            "likes": 0,
-            "isLiked": False,
-        }
-        for r in replies_rows
-    ]
+
+    print(comments_rows)
+    comment_by_id: dict[str, dict] = {}
+    replies: list[dict] = []
+    for r in comments_rows:
+        comment_by_id[r["id"]] = _reply_to_api(r, replies=[])
+
+    for r in comments_rows:
+        current = comment_by_id[r["id"]]
+        parent_id = r.get("parentCommentId")
+        if parent_id and parent_id in comment_by_id:
+            comment_by_id[parent_id]["childReplies"].append(current)
+        else:
+            replies.append(current)
+
+
+    print("REPLIES", replies)
+
+    profile = p.get("profiles")
+    if isinstance(profile, list):
+        profile = profile[0] if profile else {}
+    if not isinstance(profile, dict):
+        profile = {}
 
     return {
         "id": p["id"],
@@ -163,6 +188,11 @@ def _post_to_api(p: dict, user_id: str) -> dict:
         "content": p.get("content") or "",
         "timestamp": p.get("createdAt"),
         "likes": likes,
+        "author": {
+            "id": p.get("authorId"),
+            "name": profile.get("displayName"),
+            "avatar": profile.get("avatarUrl"),
+        },
         "isLiked": bool(my and my.get("reaction") == "like"),
         "tags": p.get("tags") or [],
         "replies": replies,

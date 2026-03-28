@@ -12,5 +12,5 @@ SUPABASE_URL = env("SUPABASE_URL", "")
 SUPABASE_KEY = env("SUPABASE_KEY", "")
 
 # Service-to-service ingestion (POST /api/ingest/program-crawl). Empty disables the endpoint (503).
-INGEST_API_TOKEN: str = os.environ.get("INGEST_API_TOKEN", "")
+INGEST_API_TOKEN: str = env("INGEST_API_TOKEN", "")
 
