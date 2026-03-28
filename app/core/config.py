@@ -14,14 +14,11 @@ SUPABASE_KEY = env("SUPABASE_KEY", "")
 # Service-to-service ingestion (POST /api/ingest/program-crawl). Empty disables the endpoint (503).
 INGEST_API_TOKEN: str = env("INGEST_API_TOKEN", "")
 
-<<<<<<< HEAD
 # Pusher realtime for messages (optional: disabled when keys are missing).
 PUSHER_APP_ID: str = env("PUSHER_APP_ID", "")
 PUSHER_KEY: str = env("PUSHER_KEY", "")
 PUSHER_SECRET: str = env("PUSHER_SECRET", "")
 PUSHER_CLUSTER: str = env("PUSHER_CLUSTER", "")
-=======
 # Dify API key for resume/CV parsing workflow.
 DIFY_API_KEY: str = env("DIFY_API_KEY", "")
->>>>>>> f390a45 (skill extractor)
 
