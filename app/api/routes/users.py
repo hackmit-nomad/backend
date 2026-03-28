@@ -27,7 +27,7 @@ def me(user_id: str = Depends(get_current_user_id)) -> dict[str, Any]:
     resp = supabase.table("profiles").select("*").eq("id", user_id).single().execute()
     if not resp.data:
         raise HTTPException(status_code=404, detail="User not found")
-    return _profile_to_user(resp.data)
+    return _profile_to_user(resp.data, "none")
 
 
 @router.patch("/me")
@@ -53,7 +53,7 @@ def update_me(body: UpdateUserRequest, user_id: str = Depends(get_current_user_i
     resp = supabase.table("profiles").update(payload).eq("id", user_id).execute()
     if not resp.data:
         raise HTTPException(status_code=404, detail="User not found")
-    return _profile_to_user(resp.data[0])
+    return _profile_to_user(resp.data[0], "none")
 
 
 @router.delete("/me", status_code=204)
@@ -88,32 +88,29 @@ def list_users(
 
     profiles_resp = query.execute()
     items = profiles_resp.data or []
+    status_by_user = _connection_status_map(user_id)
 
     if connected is not None:
-        direct = (
-            supabase.table("friendships").select("userId,friendId,status").eq("userId", user_id).execute()
-        ).data or []
-        reverse = (
-            supabase.table("friendships").select("userId,friendId,status").eq("friendId", user_id).execute()
-        ).data or []
-        connected_ids = {r["friendId"] for r in direct if r.get("status") == "connected"}
-        connected_ids |= {r["userId"] for r in reverse if r.get("status") == "connected"}
+        connected_ids = {friend_id for friend_id, status in status_by_user.items() if status == "connected"}
         if connected:
             items = [p for p in items if p["id"] in connected_ids]
         else:
             items = [p for p in items if p["id"] not in connected_ids]
 
-    return {"items": [_profile_to_user(p) for p in items], "total": len(items)}
+    return {
+        "items": [_profile_to_user(p, status_by_user.get(p["id"], "none")) for p in items],
+        "total": len(items),
+    }
 
 
 @router.get("/users/{userId}")
-def get_user_profile(userId: str) -> dict[str, Any]:
+def get_user_profile(userId: str, me_id: str = Depends(get_current_user_id)) -> dict[str, Any]:
     resp = supabase.table("profiles").select("*").eq("id", userId).single().execute()
     if not resp.data:
         raise HTTPException(status_code=404, detail="User not found")
 
     # These are not represented in the current DB schema; return empty lists for MVP.
-    user = _profile_to_user(resp.data)
+    user = _profile_to_user(resp.data, _connection_status(me_id, userId))
     return {**user, "skills": [], "experience": []}
 
 
@@ -122,31 +119,9 @@ def connect_user(userId: str, me_id: str = Depends(get_current_user_id)) -> dict
     if userId == me_id:
         raise HTTPException(status_code=400, detail="Cannot connect to self")
 
-    me_to_other = (
-        supabase.table("friendships")
-        .select("*")
-        .eq("userId", me_id)
-        .eq("friendId", userId)
-        .execute()
-    ).data or []
-    other_to_me = (
-        supabase.table("friendships")
-        .select("*")
-        .eq("userId", userId)
-        .eq("friendId", me_id)
-        .execute()
-    ).data or []
-
-    if me_to_other and me_to_other[0].get("status") == "connected":
-        return {"userId": userId, "status": "connected"}
-    if other_to_me and other_to_me[0].get("status") == "pending":
-        _set_connected(me_id, userId)
-        return {"userId": userId, "status": "connected"}
-
-    # default request creation: me->other pending, other->me incoming
-    _upsert_edge(me_id, userId, "pending")
-    _upsert_edge(userId, me_id, "incoming")
-    return {"userId": userId, "status": "pending"}
+    # UI currently models a single-step connect action.
+    _set_connected(me_id, userId)
+    return {"userId": userId, "status": "connected"}
 
 
 @router.post("/users/{userId}/connect/accept")
@@ -201,7 +176,33 @@ def _remove_both_edges(user_a: str, user_b: str) -> None:
     supabase.table("friendships").delete().eq("userId", user_b).eq("friendId", user_a).execute()
 
 
-def _profile_to_user(p: dict[str, Any]) -> dict[str, Any]:
+def _connection_status_map(user_id: str) -> dict[str, str]:
+    direct = (
+        supabase.table("friendships").select("friendId,status").eq("userId", user_id).execute()
+    ).data or []
+    reverse = (
+        supabase.table("friendships").select("userId,status").eq("friendId", user_id).execute()
+    ).data or []
+
+    status_by_user: dict[str, str] = {}
+    for row in direct:
+        friend_id = row.get("friendId")
+        if friend_id:
+            status_by_user[friend_id] = row.get("status") or "none"
+    for row in reverse:
+        friend_id = row.get("userId")
+        if friend_id and friend_id not in status_by_user:
+            status_by_user[friend_id] = row.get("status") or "none"
+    return status_by_user
+
+
+def _connection_status(me_id: str, other_id: str) -> str:
+    if me_id == other_id:
+        return "none"
+    return _connection_status_map(me_id).get(other_id, "none")
+
+
+def _profile_to_user(p: dict[str, Any], connection_status: str = "none") -> dict[str, Any]:
     return {
         "id": p["id"],
         "name": p.get("displayName") or "",
@@ -215,7 +216,7 @@ def _profile_to_user(p: dict[str, Any]) -> dict[str, Any]:
         "interests": p.get("interests") or [],
         "courses": p.get("courses") or [],
         "communities": p.get("communities") or [],
-        "isConnected": bool(p.get("isConnected")) if "isConnected" in p else False,
+        "isConnected": connection_status == "connected",
         "isOnline": bool(p.get("isOnline")) if "isOnline" in p else False,
         "profileViews": int(p.get("profileViews") or 0),
     }

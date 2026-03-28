@@ -70,6 +70,7 @@ def list_conversations(q: str | None = Query(default=None), user_id: str = Depen
             "participants": participant_ids,
             "isGroup": c.get("type") == "group",
             "groupName": c.get("groupName"),
+            "groupIcon": c.get("groupIcon"),
             "lastMessage": last.get("content") if last else "",
             "lastTimestamp": last.get("createdAt") if last else c.get("createdAt"),
             "unread": 0,
@@ -84,30 +85,40 @@ class CreateConversationRequest(BaseModel):
     participants: list[str]
     isGroup: bool = False
     groupName: str | None = None
+    groupIcon: str | None = None
 
 
 @router.post("/conversations", status_code=201)
 def create_conversation(body: CreateConversationRequest, user_id: str = Depends(get_current_user_id)) -> dict[str, Any]:
     now = datetime.now(timezone.utc).isoformat()
-    chat_type = "group" if body.isGroup else "direct"
-    chat_resp = (
-        supabase.table("chats")
-        .insert({"type": chat_type, "createdAt": now, "groupName": body.groupName})
-        .execute()
-    )
+    participant_ids = list(dict.fromkeys([p for p in body.participants if p]))
+    if not participant_ids:
+        raise HTTPException(status_code=400, detail="At least one participant is required")
+
+    # Auto-upgrade to group if multiple members are requested.
+    is_group = bool(body.isGroup or len(participant_ids) > 1)
+    chat_type = "group" if is_group else "direct"
+    insert_payload = {"type": chat_type, "createdAt": now, "groupName": body.groupName, "groupIcon": body.groupIcon}
+    try:
+        chat_resp = supabase.table("chats").insert(insert_payload).execute()
+    except Exception:
+        # Backward-compatible fallback when DB schema has no groupIcon column yet.
+        fallback_payload = {"type": chat_type, "createdAt": now, "groupName": body.groupName}
+        chat_resp = supabase.table("chats").insert(fallback_payload).execute()
     if not chat_resp.data:
         raise HTTPException(status_code=500, detail="Failed to create conversation")
     chat = chat_resp.data[0]
 
-    participants = list(dict.fromkeys([user_id, *body.participants]))
+    participants = list(dict.fromkeys([user_id, *participant_ids]))
     for pid in participants:
         supabase.table("chat_participants").upsert({"chatId": chat["id"], "userId": pid, "joinedAt": now}).execute()
 
     return {
         "id": chat["id"],
         "participants": participants,
-        "isGroup": body.isGroup,
-        "groupName": body.groupName,
+        "isGroup": is_group,
+        "groupName": chat.get("groupName"),
+        "groupIcon": chat.get("groupIcon"),
         "lastMessage": "",
         "lastTimestamp": now,
         "unread": 0,
@@ -116,6 +127,7 @@ def create_conversation(body: CreateConversationRequest, user_id: str = Depends(
 
 class UpdateConversationRequest(BaseModel):
     groupName: str | None = None
+    groupIcon: str | None = None
 
 
 @router.patch("/conversations/{conversationId}")
@@ -127,7 +139,13 @@ def update_conversation(
     _assert_is_participant(conversationId, user_id)
     payload = {k: v for k, v in body.model_dump().items() if v is not None}
     if payload:
-        supabase.table("chats").update(payload).eq("id", conversationId).execute()
+        try:
+            supabase.table("chats").update(payload).eq("id", conversationId).execute()
+        except Exception:
+            # Backward-compatible fallback when DB schema has no groupIcon column yet.
+            payload_without_icon = {k: v for k, v in payload.items() if k != "groupIcon"}
+            if payload_without_icon:
+                supabase.table("chats").update(payload_without_icon).eq("id", conversationId).execute()
     chat = supabase.table("chats").select("*").eq("id", conversationId).single().execute().data
     if not chat:
         raise HTTPException(status_code=404, detail="Conversation not found")
@@ -152,6 +170,7 @@ def update_conversation(
         "participants": participant_ids,
         "isGroup": chat.get("type") == "group",
         "groupName": chat.get("groupName"),
+        "groupIcon": chat.get("groupIcon"),
         "lastMessage": last.get("content") if last else "",
         "lastTimestamp": last.get("createdAt") if last else chat.get("createdAt"),
         "unread": 0,

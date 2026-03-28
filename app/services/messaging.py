@@ -60,6 +60,7 @@ def list_conversations(user_id: str, q: str | None = None) -> dict[str, Any]:
             "participants": participant_ids,
             "isGroup": c.get("type") == "group",
             "groupName": c.get("groupName"),
+            "groupIcon": c.get("groupIcon"),
             "lastMessage": last.get("content") if last else "",
             "lastTimestamp": last.get("createdAt") if last else c.get("createdAt"),
             "unread": 0,
@@ -75,15 +76,29 @@ def create_conversation(
     participants: list[str],
     is_group: bool = False,
     group_name: str | None = None,
+    group_icon: str | None = None,
 ) -> dict[str, Any]:
     now = datetime.now(timezone.utc).isoformat()
-    chat_type = "group" if is_group else "direct"
-    chat_resp = supabase.table("chats").insert({"type": chat_type, "createdAt": now, "groupName": group_name}).execute()
+    participant_ids = list(dict.fromkeys([p for p in participants if p]))
+    if not participant_ids:
+        raise MessagingError(400, "BAD_REQUEST", "At least one participant is required")
+
+    # Auto-upgrade to group if multiple members are requested.
+    resolved_is_group = bool(is_group or len(participant_ids) > 1)
+    chat_type = "group" if resolved_is_group else "direct"
+
+    insert_payload = {"type": chat_type, "createdAt": now, "groupName": group_name, "groupIcon": group_icon}
+    try:
+        chat_resp = supabase.table("chats").insert(insert_payload).execute()
+    except Exception:
+        # Backward-compatible fallback when DB schema has no groupIcon column yet.
+        fallback_payload = {"type": chat_type, "createdAt": now, "groupName": group_name}
+        chat_resp = supabase.table("chats").insert(fallback_payload).execute()
     if not chat_resp.data:
         raise MessagingError(500, "CREATE_FAILED", "Failed to create conversation")
     chat = chat_resp.data[0]
 
-    all_participants = list(dict.fromkeys([user_id, *participants]))
+    all_participants = list(dict.fromkeys([user_id, *participant_ids]))
     for pid in all_participants:
         supabase.table("chat_participants").upsert(
             {"chatId": chat["id"], "userId": pid, "joinedAt": now}
@@ -92,21 +107,31 @@ def create_conversation(
     return {
         "id": chat["id"],
         "participants": all_participants,
-        "isGroup": is_group,
-        "groupName": group_name,
+        "isGroup": resolved_is_group,
+        "groupName": chat.get("groupName"),
+        "groupIcon": chat.get("groupIcon"),
         "lastMessage": "",
         "lastTimestamp": now,
         "unread": 0,
     }
 
 
-def update_conversation(conversation_id: str, user_id: str, group_name: str | None) -> dict[str, Any]:
+def update_conversation(
+    conversation_id: str, user_id: str, group_name: str | None, group_icon: str | None = None
+) -> dict[str, Any]:
     _assert_is_participant(conversation_id, user_id)
     payload = {}
     if group_name is not None:
         payload["groupName"] = group_name
+    if group_icon is not None:
+        payload["groupIcon"] = group_icon
     if payload:
-        supabase.table("chats").update(payload).eq("id", conversation_id).execute()
+        try:
+            supabase.table("chats").update(payload).eq("id", conversation_id).execute()
+        except Exception:
+            payload_without_icon = {k: v for k, v in payload.items() if k != "groupIcon"}
+            if payload_without_icon:
+                supabase.table("chats").update(payload_without_icon).eq("id", conversation_id).execute()
     chat = supabase.table("chats").select("*").eq("id", conversation_id).single().execute().data
     if not chat:
         raise MessagingError(404, "NOT_FOUND", "Conversation not found")
@@ -131,6 +156,7 @@ def update_conversation(conversation_id: str, user_id: str, group_name: str | No
         "participants": participant_ids,
         "isGroup": chat.get("type") == "group",
         "groupName": chat.get("groupName"),
+        "groupIcon": chat.get("groupIcon"),
         "lastMessage": last.get("content") if last else "",
         "lastTimestamp": last.get("createdAt") if last else chat.get("createdAt"),
         "unread": 0,

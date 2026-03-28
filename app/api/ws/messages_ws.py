@@ -38,6 +38,7 @@ async def _dispatch_action(user_id: str, action: str, payload: dict[str, Any]) -
             p.get("participants") or [],
             bool(p.get("isGroup", False)),
             p.get("groupName"),
+            p.get("groupIcon"),
         )
 
     if action == "update_conversation":
@@ -49,6 +50,7 @@ async def _dispatch_action(user_id: str, action: str, payload: dict[str, Any]) -
             str(cid),
             user_id,
             p.get("groupName"),
+            p.get("groupIcon"),
         )
 
     if action == "delete_conversation":
