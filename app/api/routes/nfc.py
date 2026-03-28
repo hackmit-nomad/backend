@@ -11,7 +11,7 @@ from app.api.deps import get_current_user_id
 from app.api.routes.users import _set_connected, _upsert_edge
 from app.db.supabase import supabase
 
-router = APIRouter(prefix="/nfc", tags=["NFC"])
+router = APIRouter(prefix="/nfc")
 
 
 class NfcClaimResponse(BaseModel):
