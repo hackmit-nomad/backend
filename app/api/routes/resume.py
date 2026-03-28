@@ -2,20 +2,17 @@ from __future__ import annotations
 
 import json
 import re
-from io import BytesIO
 from typing import Any
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 
 from app.api.deps import get_current_user_id
-from app.core.config import DIFY_API_KEY
+from app.core.config import OPENAI_API_KEY
+from app.utils.text_extraction import extract_text, ExtractionError
 
 router = APIRouter(tags=["Resume"])
 
-DIFY_BASE_URL = "https://api.dify.ai/v1"
-
-# Supported MIME types for resume upload
 ALLOWED_TYPES = {
     "application/pdf",
     "application/msword",
@@ -24,70 +21,49 @@ ALLOWED_TYPES = {
 }
 MAX_FILE_SIZE = 5 * 1024 * 1024  # 5 MB
 
-
-def _extract_text(data: bytes, content_type: str) -> str:
-    """Extract plain text from uploaded file bytes."""
-    if content_type == "text/plain":
-        return data.decode("utf-8", errors="replace")
-
-    if content_type == "application/pdf":
-        try:
-            from PyPDF2 import PdfReader
-            reader = PdfReader(BytesIO(data))
-            return "\n".join(page.extract_text() or "" for page in reader.pages)
-        except Exception:
-            raise HTTPException(status_code=400, detail="Could not extract text from PDF")
-
-    if content_type in (
-        "application/msword",
-        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-    ):
-        try:
-            import docx
-            doc = docx.Document(BytesIO(data))
-            return "\n".join(p.text for p in doc.paragraphs)
-        except Exception:
-            raise HTTPException(status_code=400, detail="Could not extract text from DOCX")
-
-    raise HTTPException(status_code=400, detail=f"Unsupported file type: {content_type}")
+OPENAI_API_URL = "https://api.openai.com/v1/chat/completions"
 
 
-async def _call_dify(resume_text: str, user_id: str) -> list[str]:
-    """Call the Dify 'Resume tag extractor' workflow to extract tags."""
-    if not DIFY_API_KEY:
-        raise HTTPException(status_code=503, detail="Dify API key not configured")
+async def _call_openai(resume_text: str) -> list[str]:
+    """Send extracted resume text to OpenAI and get back skill tags."""
+    if not OPENAI_API_KEY:
+        raise HTTPException(status_code=503, detail="OpenAI API key not configured")
 
-    url = f"{DIFY_BASE_URL}/workflows/run"
+    system_prompt = (
+        "You are an expert resume analyzer. Extract professional skills, technical competencies, "
+        "and expertise tags from the resume text provided. "
+        "Return ONLY a JSON array of short tag strings (1-4 words each, lowercase). "
+        "Focus on: programming languages, frameworks, tools, methodologies, soft skills, "
+        "domain expertise, and certifications. Return 10-25 tags. "
+        'Example: ["python", "machine learning", "react.js", "agile methodology"]. '
+        "Return ONLY the JSON array, no other text."
+    )
 
     payload = {
-        "inputs": {"resume_text": resume_text},
-        "response_mode": "blocking",
-        "user": user_id,
+        "model": "gpt-4o-mini",
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": resume_text},
+        ],
+        "temperature": 0.2,
+        "max_tokens": 512,
     }
 
-    async with httpx.AsyncClient(timeout=60) as client:
+    async with httpx.AsyncClient(timeout=30) as client:
         resp = await client.post(
-            url,
+            OPENAI_API_URL,
             json=payload,
-            headers={"Authorization": f"Bearer {DIFY_API_KEY}"},
+            headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
         )
         if resp.status_code != 200:
             raise HTTPException(
                 status_code=502,
-                detail=f"Dify API error: {resp.status_code} - {resp.text[:300]}",
+                detail=f"OpenAI API error: {resp.status_code} - {resp.text[:300]}",
             )
 
-    result = resp.json()
+    raw_text = resp.json()["choices"][0]["message"]["content"].strip()
 
-    # Dify workflow response: data.outputs.tags contains the LLM output
-    outputs = result.get("data", {}).get("outputs", {})
-    raw_tags = outputs.get("tags", "")
-
-    # The LLM returns a JSON array string — parse it
-    if isinstance(raw_tags, list):
-        return [str(t).strip() for t in raw_tags if isinstance(t, str) and t.strip()]
-
-    cleaned = str(raw_tags).strip()
+    cleaned = raw_text
     if cleaned.startswith("```"):
         cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned)
         cleaned = re.sub(r"\s*```$", "", cleaned)
@@ -99,7 +75,6 @@ async def _call_dify(resume_text: str, user_id: str) -> list[str]:
     except json.JSONDecodeError:
         pass
 
-    # Fallback: find a JSON array anywhere in the text
     match = re.search(r"\[.*?\]", cleaned, re.DOTALL)
     if match:
         try:
@@ -109,15 +84,15 @@ async def _call_dify(resume_text: str, user_id: str) -> list[str]:
         except json.JSONDecodeError:
             pass
 
-    raise HTTPException(status_code=502, detail="Failed to parse tags from Dify response")
+    raise HTTPException(status_code=502, detail="Failed to parse tags from OpenAI response")
 
 
 @router.post("/api/parse-resume")
 async def parse_resume(
     file: UploadFile = File(...),
-    user_id: str = Depends(get_current_user_id),
+    _user_id: str = Depends(get_current_user_id),
 ) -> dict[str, Any]:
-    """Upload a CV/resume file, extract text, and send to Dify workflow for tag extraction."""
+    """Upload a CV/resume, extract text, and return skill tags via OpenAI."""
     if file.content_type and file.content_type not in ALLOWED_TYPES:
         raise HTTPException(status_code=400, detail=f"Unsupported file type: {file.content_type}")
 
@@ -128,10 +103,9 @@ async def parse_resume(
         raise HTTPException(status_code=400, detail="Empty file")
 
     content_type = file.content_type or "application/octet-stream"
-    text = _extract_text(data, content_type)
-
-    if not text.strip():
-        raise HTTPException(status_code=400, detail="No readable text found in file")
-
-    tags = await _call_dify(text, user_id)
+    try:
+        text = extract_text(data, content_type)
+    except ExtractionError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    tags = await _call_openai(text)
     return {"tags": tags}
