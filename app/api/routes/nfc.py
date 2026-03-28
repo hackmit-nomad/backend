@@ -75,7 +75,7 @@ def claim_or_link_nfc(uuid: str, uid_user: str = Depends(get_current_user_id)) -
             else:
                 supabase.table("nfc_tags").insert(
                     {
-                        "id": str(uuid.uuid4()),
+                        "id": str(uuid),
                         "tagUid": tag_uid,
                         **claim_payload,
                         "createdAt": now,
