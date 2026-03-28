@@ -19,9 +19,17 @@ PUSHER_APP_ID: str = env("PUSHER_APP_ID", "")
 PUSHER_KEY: str = env("PUSHER_KEY", "")
 PUSHER_SECRET: str = env("PUSHER_SECRET", "")
 PUSHER_CLUSTER: str = env("PUSHER_CLUSTER", "")
-# Dify API key aliases; prefer DIFFY_API_KEY for current setup.
-DIFFY_API_KEY: str = env("DIFFY_API_KEY", "")
-# Backwards-compatible alias used by older code paths.
+# Scheduler workflow keys.
+# New split keys:
+# - AGENDA_SCHEDULER_KEY for /calendar/events/agent-chat-schedule
+# - CHAT_SCHEDULER_KEY for /messages/.../schedule-proposals
+AGENDA_SCHEDULER_KEY: str = env("AGENDA_SCHEDULER_KEY", "")
+CHAT_SCHEDULER_KEY: str = env("CHAT_SCHEDULER_KEY", "")
+
+# Effective keys (prefer specific key, then legacy globals).
+AGENDA_WORKFLOW_API_KEY: str = AGENDA_SCHEDULER_KEY
+CHAT_WORKFLOW_API_KEY: str = CHAT_SCHEDULER_KEY
+
 # OpenAI API key for resume/CV parsing and tag extraction.
 OPENAI_API_KEY: str = env("OPENAI_API_KEY", "")
 

@@ -10,10 +10,11 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
 from app.api.deps import get_current_user_id
-from app.core.config import DIFFY_API_KEY
+from app.core.config import AGENDA_WORKFLOW_API_KEY
 from app.db.supabase import supabase
 
 router = APIRouter(prefix="/calendar", tags=["Calendar"])
+PROPOSAL_NOTIFICATION_TYPE = "calendar_proposal"
 
 
 class CreateCalendarEventRequest(BaseModel):
@@ -39,6 +40,25 @@ class UpdateCalendarEventRequest(BaseModel):
 class AgentChatScheduleRequest(BaseModel):
     agenda: str
     prompt: str | None = None
+
+
+class CalendarProposalEvent(BaseModel):
+    title: str
+    date: str
+    startTime: str
+    endTime: str
+    location: str | None = None
+    type: str
+    color: str | None = None
+
+
+class CalendarProposal(BaseModel):
+    id: str
+    conversationId: str | None = None
+    fromId: str | None = None
+    reason: str | None = None
+    event: CalendarProposalEvent
+    createdAt: str | None = None
 
 
 @router.get("/events")
@@ -140,8 +160,8 @@ async def agent_chat_schedule(
     body: AgentChatScheduleRequest,
     user_id: str = Depends(get_current_user_id),
 ) -> list[dict[str, Any]]:
-    if not DIFFY_API_KEY:
-        raise HTTPException(status_code=503, detail="DIFFY_API_KEY not configured")
+    if not AGENDA_WORKFLOW_API_KEY:
+        raise HTTPException(status_code=503, detail="AGENDA_SCHEDULER_KEY not configured")
 
     if not body.agenda.strip():
         return []
@@ -153,6 +173,96 @@ async def agent_chat_schedule(
     )
     parsed = _extract_json_array(raw_answer)
     return [_sanitize_event_request(item) for item in parsed if isinstance(item, dict)]
+
+
+@router.get("/proposals")
+def list_calendar_proposals(user_id: str = Depends(get_current_user_id)) -> dict[str, Any]:
+    rows = (
+        supabase.table("notifications")
+        .select("*")
+        .eq("userId", user_id)
+        .eq("type", PROPOSAL_NOTIFICATION_TYPE)
+        .eq("read", False)
+        .order("createdAt", desc=True)
+        .execute()
+        .data
+    ) or []
+
+    items: list[dict[str, Any]] = []
+    for row in rows:
+        parsed = _proposal_from_notification_row(row)
+        if parsed is not None:
+            items.append(parsed.model_dump())
+    return {"items": items, "total": len(items)}
+
+
+@router.post("/proposals/{proposalId}/accept", status_code=201)
+def accept_calendar_proposal(proposalId: str, user_id: str = Depends(get_current_user_id)) -> dict[str, Any]:
+    row = (
+        supabase.table("notifications")
+        .select("*")
+        .eq("id", proposalId)
+        .eq("userId", user_id)
+        .eq("type", PROPOSAL_NOTIFICATION_TYPE)
+        .single()
+        .execute()
+        .data
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="Proposal not found")
+
+    proposal = _proposal_from_notification_row(row)
+    if proposal is None:
+        raise HTTPException(status_code=422, detail="Invalid proposal payload")
+
+    now = datetime.now(timezone.utc).isoformat()
+    event = proposal.event
+    start_at = f"{event.date}T{event.startTime}:00Z"
+    end_at = f"{event.date}T{event.endTime}:00Z"
+
+    resp = (
+        supabase.table("calendar_events")
+        .insert(
+            {
+                "userId": user_id,
+                "title": event.title,
+                "date": event.date,
+                "startTime": event.startTime,
+                "endTime": event.endTime,
+                "startAt": start_at,
+                "endAt": end_at,
+                "location": event.location,
+                "type": event.type,
+                "color": event.color or "",
+                "createdAt": now,
+                "updatedAt": now,
+            }
+        )
+        .execute()
+    )
+    if not resp.data:
+        raise HTTPException(status_code=500, detail="Failed to create event from proposal")
+
+    supabase.table("notifications").update({"read": True, "readAt": now}).eq("id", proposalId).eq("userId", user_id).execute()
+    return _row_to_api(resp.data[0])
+
+
+@router.post("/proposals/{proposalId}/dismiss", status_code=204)
+def dismiss_calendar_proposal(proposalId: str, user_id: str = Depends(get_current_user_id)) -> None:
+    row = (
+        supabase.table("notifications")
+        .select("id")
+        .eq("id", proposalId)
+        .eq("userId", user_id)
+        .eq("type", PROPOSAL_NOTIFICATION_TYPE)
+        .single()
+        .execute()
+        .data
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="Proposal not found")
+    supabase.table("notifications").update({"read": True, "readAt": datetime.now(timezone.utc).isoformat()}).eq("id", proposalId).eq("userId", user_id).execute()
+    return None
 
 
 def _row_to_api(r: dict[str, Any]) -> dict[str, Any]:
@@ -172,7 +282,7 @@ async def _call_diffy_schedule_agent(*, agenda: str, prompt: str, user_id: str) 
     dify_base_url = "https://api.dify.ai/v1"
     workflow_url = f"{dify_base_url}/workflows/run"
     headers = {
-        "Authorization": f"Bearer {DIFFY_API_KEY}",
+        "Authorization": f"Bearer {AGENDA_WORKFLOW_API_KEY}",
         "Content-Type": "application/json",
     }
     payload = {
@@ -204,11 +314,27 @@ async def _call_diffy_schedule_agent(*, agenda: str, prompt: str, user_id: str) 
 
 
 def _extract_workflow_text_answer(data: dict[str, Any]) -> str:
-    # workflow: response text usually lives inside data.outputs.
-    print(data)
     workflow_data = data.get("data")
-    print(workflow_data.get("outputs").get("events"))
-    return workflow_data.get("outputs").get("events")
+    if not isinstance(workflow_data, dict):
+        raise HTTPException(status_code=502, detail="Diffy response missing workflow data")
+
+    # Support both data.events and data.outputs.events formats.
+    direct_events = workflow_data.get("events")
+    if isinstance(direct_events, str) and direct_events.strip():
+        return direct_events
+    if isinstance(direct_events, (list, dict)):
+        return json.dumps(direct_events)
+
+
+    outputs = workflow_data.get("outputs")
+    if isinstance(outputs, dict):
+        output_events = outputs.get("events")
+        if isinstance(output_events, str) and output_events.strip():
+            return output_events
+        if isinstance(output_events, (list, dict)):
+            return json.dumps(output_events)
+
+    raise HTTPException(status_code=502, detail="Diffy response missing events payload")
 
 
 def _extract_json_array(raw_text: str) -> list[Any]:
@@ -225,7 +351,6 @@ def _extract_json_array(raw_text: str) -> list[Any]:
         pass
 
     match = re.search(r"\[[\s\S]*\]", cleaned)
-    print(cleaned)
     if not match:
         raise HTTPException(status_code=422, detail="Could not parse event array from Diffy response")
     try:
@@ -259,4 +384,40 @@ def _sanitize_event_request(item: dict[str, Any]) -> dict[str, Any]:
         sanitized["color"] = str(color).strip()
 
     return sanitized
+
+
+def _proposal_from_notification_row(row: dict[str, Any]) -> CalendarProposal | None:
+    content = row.get("content")
+    if not isinstance(content, str) or not content.strip():
+        return None
+    try:
+        payload = json.loads(content)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+
+    event_payload = payload.get("event")
+    if not isinstance(event_payload, dict):
+        return None
+    event_sanitized = _sanitize_event_request(event_payload)
+    if not event_sanitized.get("title") or not event_sanitized.get("date"):
+        return None
+
+    return CalendarProposal(
+        id=str(row.get("id")),
+        conversationId=payload.get("conversationId"),
+        fromId=row.get("fromId"),
+        reason=payload.get("reason"),
+        event=CalendarProposalEvent(
+            title=event_sanitized["title"],
+            date=event_sanitized["date"],
+            startTime=event_sanitized["startTime"] or "09:00",
+            endTime=event_sanitized["endTime"] or "10:00",
+            location=event_sanitized.get("location"),
+            type=event_sanitized["type"],
+            color=event_sanitized.get("color"),
+        ),
+        createdAt=row.get("createdAt"),
+    )
 
