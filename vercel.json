@@ -1,6 +1,6 @@
 {
   "functions": {
-    "*.py": {
+    "api/*.py": {
       "regions": ["sin1"]
     }
   }
