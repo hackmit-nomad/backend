@@ -1,7 +1,15 @@
-import os, dotenv_vault
+import os
+
+import dotenv_vault  # pyright: ignore[reportMissingImports]
 
 # Keep local .env/.env.vault support, but never override host-provided env vars (e.g. Vercel).
-dotenv_vault.load_dotenv(override=False)
+# Some runtimes set an empty dotenv path which dotenv_vault treats as a real file path and crashes on.
+_dotenv_path = os.environ.get("DOTENV_CONFIG_PATH") or None
+try:
+    dotenv_vault.load_dotenv(dotenv_path=_dotenv_path, override=False)
+except FileNotFoundError:
+    # No local dotenv file is fine in hosted environments that inject env vars.
+    pass
 def env(name: str, default: str | None = None) -> str:
     val = os.environ.get(name, default)
     if val is None:
