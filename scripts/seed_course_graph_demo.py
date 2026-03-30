@@ -448,10 +448,13 @@ def _ensure_demo_courses() -> list[str]:
 
     defs = [
         ("DEMO-CG101", "Graph Foundations", "Intro", 101),
+        ("DEMO-CG121", "Data Wrangling for Networks", "Intro", 121),
         ("DEMO-CG151", "Discrete Structures for Graphs", "Intro", 151),
         ("DEMO-CG201", "Network Algorithms", "Intermediate", 201),
+        ("DEMO-CG231", "Graph Databases", "Intermediate", 231),
         ("DEMO-CG251", "Scalable Data Pipelines", "Intermediate", 251),
         ("DEMO-CG301", "Social Graph Systems", "Advanced", 301),
+        ("DEMO-CG333", "Trust & Safety Graph Signals", "Advanced", 333),
         ("DEMO-CG351", "Graph ML in Production", "Advanced", 351),
         ("DEMO-CG401", "Distributed Graph Infrastructure", "Graduate", 401),
     ]
@@ -496,14 +499,32 @@ def _ensure_demo_courses() -> list[str]:
         else:
             supabase.table("course_versions").insert(payload).execute()
 
-    # Linear prereq DAG for demos:
-    # 151 <- 101, 201 <- 151, 251 <- 201, 301 <- 251, 351 <- 301, 401 <- 351
+    # Irregular DAG for demos (asymmetric branches and merges, still acyclic):
+    # 101 -> {121,151,201}
+    # 121 -> {231,251}
+    # 151 -> {251,301}
+    # 201 -> 301
+    # 231 -> {301,333}
+    # 251 -> 333
+    # 301 -> {351,401}
+    # 333 -> 351
+    # 351 -> 401
     edge_pairs = [
+        ("DEMO-CG121", "DEMO-CG101"),
         ("DEMO-CG151", "DEMO-CG101"),
-        ("DEMO-CG201", "DEMO-CG151"),
-        ("DEMO-CG251", "DEMO-CG201"),
-        ("DEMO-CG301", "DEMO-CG251"),
+        ("DEMO-CG201", "DEMO-CG101"),
+        ("DEMO-CG231", "DEMO-CG121"),
+        ("DEMO-CG251", "DEMO-CG121"),
+        ("DEMO-CG251", "DEMO-CG151"),
+        ("DEMO-CG301", "DEMO-CG151"),
+        ("DEMO-CG301", "DEMO-CG201"),
+        ("DEMO-CG301", "DEMO-CG231"),
+        ("DEMO-CG333", "DEMO-CG231"),
+        ("DEMO-CG333", "DEMO-CG251"),
+        ("DEMO-CG351", "DEMO-CG251"),
         ("DEMO-CG351", "DEMO-CG301"),
+        ("DEMO-CG351", "DEMO-CG333"),
+        ("DEMO-CG401", "DEMO-CG301"),
         ("DEMO-CG401", "DEMO-CG351"),
     ]
     edges = [
@@ -528,6 +549,27 @@ def _ensure_demo_courses() -> list[str]:
             supabase.table("course_prerequisite_edges").update(edge_payload).eq("id", edge_id).execute()
         else:
             supabase.table("course_prerequisite_edges").insert(edge_payload).execute()
+
+    # Remove stale edges among the demo course versions so reruns keep a stable DAG.
+    expected_edge_ids = {edge_id for edge_id, _, _ in edges}
+    existing_from_demo = (
+        supabase.table("course_prerequisite_edges")
+        .select("id")
+        .in_("courseVersionId", version_ids)
+        .execute()
+        .data
+    ) or []
+    existing_to_demo = (
+        supabase.table("course_prerequisite_edges")
+        .select("id")
+        .in_("prerequisiteCourseVersionId", version_ids)
+        .execute()
+        .data
+    ) or []
+    candidate_ids = {row["id"] for row in [*existing_from_demo, *existing_to_demo] if row.get("id")}
+    stale_ids = [edge_id for edge_id in candidate_ids if edge_id not in expected_edge_ids]
+    for stale_id in stale_ids:
+        supabase.table("course_prerequisite_edges").delete().eq("id", stale_id).execute()
 
     return version_ids
 
@@ -739,6 +781,12 @@ def seed_demo_data(current_user_id: str | None) -> None:
     print("Now open /app/planner and /app/my-courses to verify graph + mutuals.")
 
 
+def seed_demo_dag_only() -> None:
+    course_ids = _ensure_demo_courses()
+    print(f"DAG-only seed complete. Demo course_versions upserted: {len(course_ids)}")
+    print("Now open /app/planner to verify the prerequisite graph.")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Seed Supabase demo data for course connection graph.")
     parser.add_argument(
@@ -758,14 +806,23 @@ def main() -> None:
         action="store_true",
         help="Clear previously seeded demo data instead of seeding.",
     )
+    parser.add_argument(
+        "--dag-only",
+        action="store_true",
+        help="Seed only demo course DAG (no profiles, friendships, communities, or posts).",
+    )
     args = parser.parse_args()
 
-    current_user_id = _resolve_current_user_id(args.user_id, args.user_email)
-
     if args.clear:
+        current_user_id = _resolve_current_user_id(args.user_id, args.user_email)
         clear_demo_data(current_user_id)
         return
 
+    if args.dag_only:
+        seed_demo_dag_only()
+        return
+
+    current_user_id = _resolve_current_user_id(args.user_id, args.user_email)
     seed_demo_data(current_user_id)
 
 
